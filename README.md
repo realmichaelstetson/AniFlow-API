@@ -16,6 +16,11 @@
   <img src="https://img.shields.io/badge/License-MIT-emerald?style=for-the-badge" alt="License" />
 </p>
 
+<p align="center">
+  <a href="#-tags-topics--search-queries"><img src="https://img.shields.io/badge/Topics-anime--api%20%7C%20anime--embed%20%7C%20anilist%20%7C%20myanimelist%20%7C%20hls--streaming-purple?style=flat-square" alt="Topics" /></a>
+  <a href="#-tags-topics--search-queries"><img src="https://img.shields.io/badge/Features-autoskip%20%7C%20aniskip%20%7C%20postMessage%20%7C%20sub--dub-zinc?style=flat-square" alt="Features" /></a>
+</p>
+
 ---
 
 ## 📖 Overview
@@ -298,6 +303,27 @@ docker run -p 3000:3000 aniflow-api
 AniFlow API is an open-source stream aggregator and playback client designed solely for educational and integration purposes. AniFlow **does not host, store, or upload** any video files or copyrighted media on its servers. All video streams and metadata are resolved dynamically from publicly available, third-party internet endpoints. 
 
 Any copyright claims or DMCA requests should be directed to the respective upstream media hosts.
+
+---
+
+## 🏷️ Tags, Topics & Search Queries
+
+AniFlow API is optimized for high discoverability across GitHub and web search engines for developers looking to integrate video playback:
+
+### Repository Topics & Tags
+`anime` • `anime-api` • `anime-embed` • `anime-player` • `anime-streaming` • `anime-stream` • `anilist` • `anilist-api` • `anilist-embed` • `myanimelist` • `mal` • `mal-api` • `mal-embed` • `hls-streaming` • `hls-player` • `m3u8-player` • `video-player` • `aniskip` • `auto-skip` • `streaming-api` • `embed-api` • `iframe-player` • `react-anime-player` • `nextjs-anime-player` • `consumet` • `vidhawk` • `aniflow`
+
+### Targeted Developer Search Queries
+
+| Query / Search Intent | Solution / Endpoint Provided |
+| :--- | :--- |
+| **"How to embed anime video player with AniList ID"** | Standard route: `/embed/ani/:anilistId/:episode/:audio` with automatic metadata mapping. |
+| **"MyAnimeList (MAL) anime video streaming iframe"** | Standard route: `/embed/mal/:malId/:episode/:audio` with multi-server resolution. |
+| **"Free anime embed API with sub and dub switching"** | In-player and query-level instant Sub & Dub track switching. |
+| **"Anime player with auto skip intro and outro"** | Integrated AniSkip API with timeline segment markers and auto-skip toggles. |
+| **"HLS stream extractor and edge caching proxy"** | Edge-proxied `.m3u8` playlists and TS video segments with header normalization. |
+| **"Two-way postMessage communication for anime embed"** | Full parent-window real-time event streaming (`time`, `complete`, etc.) and remote control. |
+| **"Self-hosted alternative to Consumet, VidHawk or Gogoanime API"** | 100% self-hosted Next.js 14 backend with liquid glass dark minimalist UI. |
 
 ---
 
