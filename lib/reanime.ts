@@ -688,14 +688,20 @@ export async function getReanimeEpisodeSources(
             };
           });
 
+          const isFlow2 =
+            (s.server || "").toUpperCase().includes("HD-2") ||
+            (s.server || "").toUpperCase().includes("2");
+          const flowLabel = isFlow2 ? "Flow 2" : "Flow 1";
+          const flowId = isFlow2 ? "flow-2" : "flow-1";
+
           sources.push({
-            id: `reanime-${(s.server || "HD-1").toLowerCase()}-${s.audio}`,
+            id: `reanime-${flowId}-${s.audio}`,
             type: isDub ? "DUB" : "SUB",
             language: isDub ? "English Dub" : "Japanese",
             videoUrl: proxyUrl,
             quality: "1080p",
             isHls: true,
-            serverName: isDub ? `${s.server} (English Dub)` : `${s.server} (Sub)`,
+            serverName: isDub ? `${flowLabel} (English Dub)` : `${flowLabel} (Sub)`,
             subtitles: srvSubtitles.length > 0 ? srvSubtitles : undefined,
           });
         }

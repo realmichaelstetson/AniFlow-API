@@ -36,7 +36,7 @@ export async function getEpisodeSkipTimes(
     const res = await axios.get(url, {
       timeout: 3500,
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VidHawk-API",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Aniflow-API",
         Accept: "application/json",
       },
     });

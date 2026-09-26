@@ -1,0 +1,14 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Left leg of A with inner hook -->
+  <path d="M 45 15 L 17 83 L 29 83 L 41 57" />
+  <!-- Right leg of A with inner hook -->
+  <path d="M 45 15 L 73 83 L 61 83 L 53 65" />
+  
+  <!-- Play triangle in center -->
+  <polygon points="38,43 56,53.5 38,64" stroke-width="5.5" />
+  
+  <!-- Letter F top arm -->
+  <path d="M 54 35 L 85 35" />
+  <!-- Letter F vertical and mid bar -->
+  <path d="M 54 35 L 54 53 L 73 53" />
+</svg>

@@ -349,11 +349,24 @@ export async function resolveAnimexPlayStream({
   }
 
   const rawProviders = type === "sub" ? subProviders : dubProviders;
-  const providers = rawProviders.filter((p) => !isBlockedAnimexProvider(p.id));
+  // Zuri is actually 'zuna' from the extractor and is strictly SUB ONLY
+  const providers = rawProviders.filter(
+    (p) => !isBlockedAnimexProvider(p.id) && !(type === "dub" && (p.id.toLowerCase() === "zuna" || p.id.toLowerCase() === "zuri"))
+  );
 
   const candidateProviders: string[] = [];
   if (provider && !isBlockedAnimexProvider(provider)) {
-    candidateProviders.push(provider);
+    const norm = provider.toLowerCase();
+    if (norm === "yuri" || norm === "yuki") {
+      candidateProviders.push("yuki", "yuri");
+    } else if (norm === "zuri" || norm === "zuna") {
+      // Zuri / zuna is only valid for SUB
+      if (type === "sub") {
+        candidateProviders.push("zuna", "zuri", "yuki");
+      }
+    } else {
+      candidateProviders.push(provider);
+    }
   }
   const defaultProvider = providers.find((p) => p.default);
   if (defaultProvider && !candidateProviders.includes(defaultProvider.id)) {
@@ -374,7 +387,9 @@ export async function resolveAnimexPlayStream({
 
   for (const prov of candidateProviders) {
     try {
-      const res = await getSource(targetSlug, episode, type, prov);
+      const mappedProv =
+        prov.toLowerCase() === "yuri" ? "yuki" : prov.toLowerCase() === "zuri" ? "zuna" : prov;
+      const res = await getSource(targetSlug, episode, type, mappedProv);
       if (res?.sources && res.sources.length > 0 && res.sources[0]?.url) {
         const streamUrl = res.sources[0].url.toLowerCase();
         if (
@@ -385,7 +400,13 @@ export async function resolveAnimexPlayStream({
           continue;
         }
         result = res;
-        selectedProvider = prov;
+        const pNorm = prov.toLowerCase();
+        selectedProvider =
+          pNorm === "yuri" || pNorm === "yuki"
+            ? "Yuri"
+            : pNorm === "zuri" || pNorm === "zuna"
+            ? "Zuri"
+            : prov.charAt(0).toUpperCase() + prov.slice(1);
         break;
       }
     } catch (err: any) {
@@ -450,6 +471,8 @@ export interface AnimexEpisodeSourceItem {
   }>;
 }
 
+const animexSourcesCache = new Map<string, { data: AnimexEpisodeSourceItem[]; timestamp: number }>();
+
 /**
  * Fetch all available Animex video source records (SUB & DUB) for an episode.
  */
@@ -457,86 +480,77 @@ export async function getAnimexEpisodeSources(
   anilistId: number,
   episodeNumber: number
 ): Promise<AnimexEpisodeSourceItem[]> {
+  const cacheKey = `${anilistId}_${episodeNumber}`;
+  const cached = animexSourcesCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   const sources: AnimexEpisodeSourceItem[] = [];
 
   try {
     const info = await getEmbedInfo(anilistId, episodeNumber);
 
-    // 1. Resolve SUB providers in parallel
-    await Promise.allSettled(
-      info.subProviders.map(async (p) => {
-        if (isBlockedAnimexProvider(p.id)) return;
-        let subTracks: any[] = [];
-        try {
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500));
-          const srcData = (await Promise.race([
-            getSource(info.slug, episodeNumber, "sub", p.id),
-            timeoutPromise,
-          ])) as any;
-          if (srcData?.tracks && srcData.tracks.length > 0) {
-            subTracks = srcData.tracks.map((t: any, idx: number) => ({
-              id: `${p.id}-sub-${idx}`,
-              language: t.lang || t.label || "English",
-              label: t.label || t.lang || "English",
-              subtitleUrl: `/api/proxy/subtitles?url=${encodeURIComponent(t.url)}&referer=${encodeURIComponent(srcData.headers?.Referer || "")}`,
-              isDefault: t.default !== undefined ? t.default : idx === 0,
-            }));
-          }
-        } catch {}
+    // 1. Resolve SUB providers: Yuri and Zuri
+    const targetSubProviders: AnimexProvider[] = [];
+    const existingYuri = info.subProviders.find((p) => p.id.toLowerCase() === "yuki" || p.id.toLowerCase() === "yuri");
+    targetSubProviders.push(existingYuri || { id: "yuri", default: true, tip: "Yuri" });
 
-        sources.push({
-          id: `animex-${p.id}-sub`,
-          type: "SUB",
-          language: "Japanese",
-          videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=sub&provider=${encodeURIComponent(p.id)}&format=m3u8`,
-          quality: "1080p",
-          isHls: true,
-          serverName: `${p.id.toUpperCase()} (Sub)`,
-          subtitles: subTracks.length > 0 ? subTracks : undefined,
-        });
-      })
-    );
+    const existingZuri = info.subProviders.find((p) => p.id.toLowerCase() === "zuna" || p.id.toLowerCase() === "zuri");
+    targetSubProviders.push(existingZuri || { id: "zuri", default: false, tip: "Zuri" });
 
-    // 2. Resolve DUB providers in parallel
-    if (info.dubProviders && info.dubProviders.length > 0) {
-      await Promise.allSettled(
-        info.dubProviders.map(async (p) => {
-          if (isBlockedAnimexProvider(p.id)) return;
-          let dubTracks: any[] = [];
-          try {
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500));
-            const srcData = (await Promise.race([
-              getSource(info.slug, episodeNumber, "dub", p.id),
-              timeoutPromise,
-            ])) as any;
-            if (srcData?.tracks && srcData.tracks.length > 0) {
-              dubTracks = srcData.tracks.map((t: any, idx: number) => ({
-                id: `${p.id}-dub-${idx}`,
-                language: t.lang || t.label || "English",
-                label: t.label || t.lang || "English",
-                subtitleUrl: `/api/proxy/subtitles?url=${encodeURIComponent(t.url)}&referer=${encodeURIComponent(srcData.headers?.Referer || "")}`,
-                isDefault: t.default !== undefined ? t.default : idx === 0,
-              }));
-            }
-          } catch {}
+    for (const p of targetSubProviders) {
+      if (isBlockedAnimexProvider(p.id)) continue;
+      const normId =
+        p.id.toLowerCase() === "yuki" || p.id.toLowerCase() === "yuri"
+          ? "yuri"
+          : p.id.toLowerCase() === "zuna" || p.id.toLowerCase() === "zuri"
+          ? "zuri"
+          : p.id;
+      const displayName =
+        normId === "yuri" ? "Yuri" : normId === "zuri" ? "Zuri" : p.id.charAt(0).toUpperCase() + p.id.slice(1);
 
-          sources.push({
-            id: `animex-${p.id}-dub`,
-            type: "DUB",
-            language: "English Dub",
-            videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=dub&provider=${encodeURIComponent(p.id)}&format=m3u8`,
-            quality: "1080p",
-            isHls: true,
-            serverName: `${p.id.toUpperCase()} (English Dub)`,
-            subtitles: dubTracks.length > 0 ? dubTracks : undefined,
-          });
-        })
-      );
+      sources.push({
+        id: `animex-${normId}-sub`,
+        type: "SUB",
+        language: "Japanese",
+        videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=sub&provider=${encodeURIComponent(normId)}&format=m3u8`,
+        quality: "1080p",
+        isHls: true,
+        serverName: `${displayName} (Sub)`,
+      });
+    }
+
+    // 2. Resolve DUB providers: Yuri only
+    const targetDubProviders: AnimexProvider[] = [];
+    const existingDubYuri = info.dubProviders?.find((p) => p.id.toLowerCase() === "yuki" || p.id.toLowerCase() === "yuri");
+    if (existingDubYuri || (info.dubProviders && info.dubProviders.length > 0)) {
+      targetDubProviders.push(existingDubYuri || { id: "yuri", default: true, tip: "Yuri" });
+    }
+
+    for (const p of targetDubProviders) {
+      if (isBlockedAnimexProvider(p.id)) continue;
+      const normId = "yuri";
+      const displayName = "Yuri";
+
+      sources.push({
+        id: `animex-${normId}-dub`,
+        type: "DUB",
+        language: "English Dub",
+        videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=dub&provider=${encodeURIComponent(normId)}&format=m3u8`,
+        quality: "1080p",
+        isHls: true,
+        serverName: `${displayName} (English Dub)`,
+      });
     }
   } catch (err: any) {
     if (!err?.message?.includes("404")) {
       console.warn(`[AnimexExtractor] Notice resolving sources for ${anilistId} ep ${episodeNumber}:`, err?.message || err);
     }
+  }
+
+  if (sources.length > 0) {
+    animexSourcesCache.set(cacheKey, { data: sources, timestamp: Date.now() });
   }
 
   return sources;

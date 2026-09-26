@@ -208,7 +208,7 @@ export function EmbedPlayer({
   // Settings Menu
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsSubMenu, setSettingsSubMenu] = useState<
-    "main" | "server" | "server-sub" | "server-dub" | "subtitles" | "subtitle-style" | "quality" | "speed" | "boost"
+    "main" | "server" | "server-sub" | "server-dub" | "subtitles" | "subtitle-style" | "quality" | "speed" | "boost" | "autoskip"
   >("main");
   const [menuHeight, setMenuHeight] = useState<number | undefined>(undefined);
   const [menuMaxHeight, setMenuMaxHeight] = useState<number | undefined>(undefined);
@@ -380,10 +380,17 @@ export function EmbedPlayer({
           setSources(data.sources);
           const isDub = selectedType === "dub";
           const typeMatch = (s: VideoSourceData) => (isDub ? s.type === "DUB" : s.type === "SUB");
-          if (server === "zuri" || server === "animex") {
+          const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
+          if (sNorm.includes("flow-2") || sNorm === "flow2") {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("flow-2") || s.id?.includes("flow2")) && typeMatch(s));
+          } else if (sNorm.includes("yuri") || sNorm.includes("yuki")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("yuri") || s.id?.includes("yuki")) && typeMatch(s));
+          } else if (sNorm.includes("zuri") || sNorm.includes("zuna")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("zuri") || s.id?.includes("zuna")) && typeMatch(s));
+          } else if (sNorm.includes("animex")) {
             selectedSource = data.sources.find((s: VideoSourceData) => s.id?.includes("animex") && typeMatch(s));
-          } else if (server === "flow" || server === "reanime") {
-            selectedSource = data.sources.find((s: VideoSourceData) => s.id?.includes("reanime") && typeMatch(s));
+          } else if (sNorm.includes("flow") || sNorm.includes("reanime")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("flow-1") || s.id?.includes("flow1") || s.id?.includes("reanime")) && typeMatch(s));
           }
           if (!selectedSource && initialStream) {
             selectedSource = data.sources.find((s: VideoSourceData) => s.videoUrl === initialStream);
@@ -1241,6 +1248,107 @@ export function EmbedPlayer({
     return found ? found.name : "1080p";
   })();
 
+  const getSourceProvider = useCallback((src: VideoSourceData) => {
+    const sId = (src.id || "").toLowerCase();
+    const sName = (src.serverName || "").toLowerCase();
+    const sUrl = (src.videoUrl || "").toLowerCase();
+
+    // 1. Zuri from Extractor
+    if (
+      sId.includes("zuri") ||
+      sName.includes("zuri") ||
+      sUrl.includes("provider=zuri") ||
+      sId.includes("zuna") ||
+      sName.includes("zuna") ||
+      sUrl.includes("provider=zuna")
+    ) {
+      return "Zuri";
+    }
+
+    // 2. Yuri from Extractor
+    if (
+      sId.includes("yuri") ||
+      sName.includes("yuri") ||
+      sUrl.includes("provider=yuri") ||
+      sId.includes("yuki") ||
+      sName.includes("yuki") ||
+      sUrl.includes("provider=yuki")
+    ) {
+      return "Yuri";
+    }
+
+    // 3. Flow 2 from Re:ANIME
+    if (
+      sId.includes("flow-2") ||
+      sId.includes("flow2") ||
+      sName.includes("flow 2") ||
+      sName.includes("flow-2") ||
+      sName.includes("hd-2") ||
+      sName.includes("hd 2") ||
+      sUrl.includes("server=hd-2") ||
+      sUrl.includes("server=hd2") ||
+      sUrl.includes("fetch8")
+    ) {
+      return "Flow 2";
+    }
+
+    // 4. Flow 1 from Re:ANIME
+    if (
+      sId.includes("flow-1") ||
+      sId.includes("flow1") ||
+      sName.includes("flow 1") ||
+      sName.includes("flow-1") ||
+      sName.includes("hd-1") ||
+      sName.includes("hd 1") ||
+      sId.startsWith("reanime-") ||
+      sId.startsWith("coolapi-") ||
+      sName.includes("reanime") ||
+      sName.includes("coolapi") ||
+      sName.includes("aniflow") ||
+      sName.includes("flow") ||
+      sUrl.includes("server=hd-1") ||
+      sUrl.includes("server=hd1")
+    ) {
+      return "Flow 1";
+    }
+
+    // Fallback: check query params on URL
+    try {
+      const base = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+      const parsed = new URL(src.videoUrl, base);
+      const prov = parsed.searchParams.get("provider") || parsed.searchParams.get("providerId") || "";
+      if (prov) {
+        const pNorm = prov.toLowerCase();
+        if (pNorm.includes("zuri") || pNorm.includes("zuna")) return "Zuri";
+        if (pNorm.includes("yuri") || pNorm.includes("yuki")) return "Yuri";
+        return prov.charAt(0).toUpperCase() + prov.slice(1).toLowerCase();
+      }
+    } catch {}
+
+    if (src.serverName) {
+      let cleaned = src.serverName
+        .replace(/^Consumet\s*[-–:]\s*/i, "")
+        .replace(/\(HLS auto\)/i, "")
+        .replace(/\(HLS\s*([^)]+)\)/i, "($1)")
+        .replace(/\s*\((sub|dub|english dub)[^)]*\)/i, "")
+        .trim();
+      if (cleaned) return cleaned;
+    }
+
+    return "Flow 1";
+  }, []);
+
+  const sortSourcesByProvider = useCallback((a: VideoSourceData, b: VideoSourceData) => {
+    const SERVER_SORT_ORDER = ["flow 1", "flow 2", "yuri", "zuri"];
+    const provA = getSourceProvider(a).toLowerCase();
+    const provB = getSourceProvider(b).toLowerCase();
+    const idxA = SERVER_SORT_ORDER.indexOf(provA);
+    const idxB = SERVER_SORT_ORDER.indexOf(provB);
+    const orderA = idxA === -1 ? 99 : idxA;
+    const orderB = idxB === -1 ? 99 : idxB;
+    return orderA - orderB;
+  }, [getSourceProvider]);
+
   // Native player sources segregated for SUB and DUB
   const nativeSubSources = useMemo<VideoSourceData[]>(() => {
     const raw = sources.filter((s) => s.type === "SUB" && isNativePlayerSource(s));
@@ -1255,12 +1363,18 @@ export function EmbedPlayer({
         deduplicated.push(s);
       }
     }
-    return deduplicated;
-  }, [sources]);
+    return deduplicated.sort(sortSourcesByProvider);
+  }, [sources, sortSourcesByProvider]);
 
   const nativeDubSources = useMemo<VideoSourceData[]>(() => {
-    const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s));
-    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB"));
+    // Zuri (zuna from extractor) is strictly SUB ONLY - never present in Dub
+    const isNotZuri = (s: VideoSourceData) => {
+      const id = (s.id || "").toLowerCase();
+      const name = (s.serverName || "").toLowerCase();
+      return !id.includes("zuri") && !id.includes("zuna") && !name.includes("zuri") && !name.includes("zuna");
+    };
+    const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s) && isNotZuri(s));
+    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB" && isNotZuri(s)));
     const seen = new Set<string>();
     const deduplicated: VideoSourceData[] = [];
     for (const s of list) {
@@ -1271,8 +1385,8 @@ export function EmbedPlayer({
         deduplicated.push(s);
       }
     }
-    return deduplicated;
-  }, [sources]);
+    return deduplicated.sort(sortSourcesByProvider);
+  }, [sources, sortSourcesByProvider]);
 
   const currentSource = useMemo(() => {
     if (activeSourceId) {
@@ -1282,85 +1396,6 @@ export function EmbedPlayer({
     const forType = sources.filter((s) => s.type.toLowerCase() === selectedType.toLowerCase());
     return forType[0] || sources[0] || null;
   }, [sources, activeSourceId, selectedType]);
-
-  const getSourceProvider = useCallback((src: VideoSourceData) => {
-    const isAnimex = Boolean(
-      src.id?.startsWith("animex-") ||
-      src.videoUrl?.includes("provider=") ||
-      src.videoUrl?.includes("providerId=") ||
-      src.serverName?.toLowerCase().includes("animex")
-    );
-    if (isAnimex) {
-      let prov = "";
-      try {
-        const parsed = new URL(src.videoUrl, "http://localhost:3000");
-        prov = parsed.searchParams.get("provider") || parsed.searchParams.get("providerId") || "";
-      } catch {}
-      if (!prov && src.serverName) {
-        const match = src.serverName.match(/^([a-zA-Z0-9_-]+)/);
-        if (match) prov = match[1];
-      }
-      if (prov) {
-        return prov.charAt(0).toUpperCase() + prov.slice(1).toLowerCase();
-      }
-      return "Animex";
-    }
-
-    const isCoolapi = Boolean(
-      src.id?.startsWith("coolapi-") ||
-      (src.videoUrl?.includes("/api/play") && !isAnimex) ||
-      src.serverName?.toLowerCase().includes("reanime") ||
-      src.serverName?.toLowerCase().includes("coolapi") ||
-      src.serverName?.toLowerCase().includes("aniflow") ||
-      src.serverName?.toLowerCase().includes("flow") ||
-      src.serverName?.toLowerCase().startsWith("hd-") ||
-      src.serverName?.toLowerCase().startsWith("hd 1") ||
-      src.serverName?.toLowerCase().startsWith("hd 2") ||
-      src.id?.startsWith("reanime-")
-    );
-    if (isCoolapi) {
-      const name = (src.serverName || "").toLowerCase();
-      const url = (src.videoUrl || "").toLowerCase();
-      if (
-        name.includes("hd-2") ||
-        name.includes("hd 2") ||
-        url.includes("server=hd-2") ||
-        url.includes("server=hd2") ||
-        url.includes("fetch8")
-      ) {
-        return "Flow 2";
-      }
-      if (
-        name.includes("hd-3") ||
-        name.includes("hd 3") ||
-        url.includes("server=hd-3") ||
-        url.includes("server=hd3")
-      ) {
-        return "Flow 3";
-      }
-      if (
-        name.includes("hd-1") ||
-        name.includes("hd 1") ||
-        url.includes("server=hd-1") ||
-        url.includes("server=hd1")
-      ) {
-        return "Flow 1";
-      }
-      return "Flow";
-    }
-
-    if (src.serverName) {
-      let cleaned = src.serverName
-        .replace(/^Consumet\s*[-–:]\s*/i, "")
-        .replace(/\(HLS auto\)/i, "")
-        .replace(/\(HLS\s*([^)]+)\)/i, "($1)")
-        .replace(/\s*\((sub|dub|english dub)[^)]*\)/i, "")
-        .trim();
-      if (cleaned) return cleaned;
-    }
-
-    return "Stream";
-  }, []);
 
   const formatServerRouteName = useCallback((src: VideoSourceData) => {
     return getSourceProvider(src);
@@ -1891,7 +1926,7 @@ export function EmbedPlayer({
         {/* Control Capsules (Left & Right) */}
         <div className="flex items-center justify-between gap-2">
           {/* Left Controls: Unified Apple Liquid Glass Pill Container */}
-          <div className="flex items-center h-10 sm:h-10.5 px-1.5 py-1 rounded-full bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] border border-white/10 gap-1">
+          <div className="flex items-center h-10 sm:h-10.5 px-1.5 py-1 rounded-full bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] gap-1">
             {/* Play / Pause Button */}
             <button
               type="button"
@@ -2032,7 +2067,7 @@ export function EmbedPlayer({
           </div>
 
           {/* Right Controls: Unified Apple Liquid Glass Pill Container */}
-          <div className="flex items-center h-10 sm:h-10.5 px-1.5 py-1 rounded-full bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] border border-white/10 gap-1">
+          <div className="flex items-center h-10 sm:h-10.5 px-1.5 py-1 rounded-full bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] gap-1">
             {/* Picture in Picture */}
             <button
               type="button"
@@ -2123,18 +2158,15 @@ export function EmbedPlayer({
           </div>
         </div>
 
-        {/* Settings Modal Card with shad-renew Frosted Glass styling */}
+        {/* Settings Modal Card with Apple Liquid Glass styling, smooth slide-in and dynamic fluid height transition */}
         <div
           ref={settingsMenuRef}
           style={{
-            backgroundColor: "rgba(12, 12, 12, 0.92)",
-            backdropFilter: "blur(20px)",
-            WebkitBackdropFilter: "blur(20px)",
             height: menuHeight ? `${menuHeight}px` : undefined,
             maxHeight: menuMaxHeight ? `${menuMaxHeight}px` : undefined,
           }}
           className={cn(
-            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 w-[260px] sm:w-[285px] rounded-xl border border-white/[0.1] shadow-2xl shadow-black/90 font-product-sans z-50 text-white transition-[height,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
+            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 w-[260px] sm:w-[285px] rounded-2xl bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] z-50 text-white transition-[height,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
             menuMaxHeight && menuHeight && menuHeight > menuMaxHeight && "overflow-y-auto player-menu-scrollbar",
             showSettingsMenu ? "scale-100 translate-y-0 pointer-events-auto" : "scale-0 translate-y-4 pointer-events-none"
           )}
@@ -2237,55 +2269,31 @@ export function EmbedPlayer({
                   </div>
                 </button>
 
-                {/* 6. Auto-skip Intro / Outro Toggles */}
-                <div className="border-t border-white/[0.08] pt-1.5 mt-1.5 space-y-1">
-                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/[0.04] transition-colors">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span className="text-xs font-medium text-white font-product-sans">Auto Skip Intro</span>
+                {/* 6. Auto Skip */}
+                <button
+                  type="button"
+                  onClick={() => setSettingsSubMenu("autoskip")}
+                  className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-6 h-6 rounded-lg bg-white/[0.08] flex items-center justify-center text-zinc-300 group-hover:text-white transition-colors">
+                      <Sparkles className="w-3 h-3" />
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoSkipState}
-                      onClick={() => setAutoSkipState((p) => !p)}
-                      className={cn(
-                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
-                        autoSkipState ? "bg-amber-400" : "bg-[#202020] border border-white/[0.08]"
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
-                          autoSkipState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-400"
-                        )}
-                      />
-                    </button>
+                    <span className="text-[11px] font-semibold text-white">Auto Skip</span>
                   </div>
-                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/[0.04] transition-colors">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span className="text-xs font-medium text-white font-product-sans">Auto Skip Outro</span>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoSkipOutroState}
-                      onClick={() => setAutoSkipOutroState((p) => !p)}
-                      className={cn(
-                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
-                        autoSkipOutroState ? "bg-amber-400" : "bg-[#202020] border border-white/[0.08]"
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
-                          autoSkipOutroState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-400"
-                        )}
-                      />
-                    </button>
+                  <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
+                    <span className="font-medium">
+                      {autoSkipState && autoSkipOutroState
+                        ? "Intro & Outro"
+                        : autoSkipState
+                        ? "Intro"
+                        : autoSkipOutroState
+                        ? "Outro"
+                        : "Off"}
+                    </span>
+                    <ChevronRight className="w-3 h-3 text-zinc-400" />
                   </div>
-                </div>
+                </button>
               </div>
             )}
 
@@ -2300,7 +2308,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Server Route</span>
+                  <span className="text-[11px] font-semibold text-white">Server Route</span>
                 </div>
 
                 <div className="space-y-0.5">
@@ -2308,9 +2316,9 @@ export function EmbedPlayer({
                   <button
                     type="button"
                     onClick={() => setSettingsSubMenu("server-sub")}
-                    className="w-full flex items-center justify-between px-2 py-2 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
+                    className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
                   >
-                    <span className="text-[11px] font-bold text-white tracking-wide">Sub</span>
+                    <span className="text-[11px] font-semibold text-white">Sub</span>
                     <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
                       <span>
                         {nativeSubSources.length} {nativeSubSources.length === 1 ? "server" : "servers"}
@@ -2325,13 +2333,13 @@ export function EmbedPlayer({
                     onClick={() => setSettingsSubMenu("server-dub")}
                     disabled={nativeDubSources.length === 0}
                     className={cn(
-                      "w-full flex items-center justify-between px-2 py-2 rounded-xl transition-colors group text-left",
+                      "w-full flex items-center justify-between p-1.5 rounded-xl transition-colors group text-left",
                       nativeDubSources.length === 0
                         ? "opacity-40 cursor-not-allowed"
                         : "hover:bg-white/[0.08] active:bg-white/[0.12] cursor-pointer"
                     )}
                   >
-                    <span className="text-[11px] font-bold text-white tracking-wide">Dub</span>
+                    <span className="text-[11px] font-semibold text-white">Dub</span>
                     <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
                       <span>
                         {nativeDubSources.length} {nativeDubSources.length === 1 ? "server" : "servers"}
@@ -2354,7 +2362,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Sub Servers</span>
+                  <span className="text-[11px] font-semibold text-white">Sub Servers</span>
                 </div>
 
                 <div className="space-y-0.5 max-h-52 overflow-y-auto overflow-x-hidden pr-1.5 player-menu-scrollbar">
@@ -2410,7 +2418,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Dub Servers</span>
+                  <span className="text-[11px] font-semibold text-white">Dub Servers</span>
                 </div>
 
                 <div className="space-y-0.5 max-h-52 overflow-y-auto overflow-x-hidden pr-1.5 player-menu-scrollbar">
@@ -2466,7 +2474,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Subtitles</span>
+                  <span className="text-[11px] font-semibold text-white">Subtitles</span>
                 </div>
 
                 <div className="space-y-0.5 max-h-52 overflow-y-auto pr-1.5 player-menu-scrollbar">
@@ -2547,7 +2555,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Subtitle Style</span>
+                  <span className="text-[11px] font-semibold text-white">Subtitle Style</span>
                 </div>
 
                 <div className="space-y-2.5 max-h-[168px] overflow-y-auto pr-1.5 text-[11px] player-menu-scrollbar overscroll-contain">
@@ -2786,7 +2794,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Quality</span>
+                  <span className="text-[11px] font-semibold text-white">Quality</span>
                 </div>
 
                 <div className="space-y-0.5 max-h-52 overflow-y-auto pr-1.5 player-menu-scrollbar">
@@ -2853,7 +2861,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Playback Speed</span>
+                  <span className="text-[11px] font-semibold text-white">Playback Speed</span>
                 </div>
 
                 <div className="px-1 py-0.5 space-y-2 text-[11px]">
@@ -2940,7 +2948,7 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-bold text-white tracking-wide">Volume Boost</span>
+                  <span className="text-[11px] font-semibold text-white">Volume Boost</span>
                 </div>
 
                 <div className="px-1 py-0.5 space-y-2 text-[11px]">
@@ -3008,6 +3016,66 @@ export function EmbedPlayer({
                         </>
                       );
                     })()}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-menu: Auto Skip */}
+            {settingsSubMenu === "autoskip" && (
+              <div className="animate-in fade-in slide-in-from-right-3 duration-200">
+                <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubMenu("main")}
+                    className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
+                  </button>
+                  <span className="text-[11px] font-semibold text-white">Auto Skip</span>
+                </div>
+
+                <div className="space-y-1 pt-0.5">
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-white/[0.04] transition-colors">
+                    <span className="text-[11px] font-semibold text-white">Auto Skip Intro</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={autoSkipState}
+                      onClick={() => setAutoSkipState((p) => !p)}
+                      className={cn(
+                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                        autoSkipState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                          autoSkipState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-white/[0.04] transition-colors">
+                    <span className="text-[11px] font-semibold text-white">Auto Skip Outro</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={autoSkipOutroState}
+                      onClick={() => setAutoSkipOutroState((p) => !p)}
+                      className={cn(
+                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                        autoSkipOutroState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                          autoSkipOutroState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                        )}
+                      />
+                    </button>
                   </div>
                 </div>
               </div>

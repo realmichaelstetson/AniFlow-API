@@ -1,5 +1,6 @@
 {
-  "name": "vidhawk-embed",
+  "name": "aniflow-api",
+  "description": "AniFlow API — Developer-First Anime Embedding Engine & Player",
   "version": "1.0.0",
   "private": true,
   "scripts": {

@@ -2,11 +2,16 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VidHawk — Seamless Anime Embedding API",
+  title: "aniflow — High-Performance Anime Embedding API & Player",
   description:
-    "High-performance AniList & MAL anime embeds for developers. Flow and Zuri servers, Sub/Dub switching, edge-proxied HLS, and postMessage sync.",
+    "Developer-first AniList & MAL anime embedding API. Flow, Yuri & Zuri servers, Sub/Dub switching, edge-proxied HLS, and postMessage event sync.",
   icons: {
-    icon: "/favicon.ico",
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/icons/apple-touch-icon.png",
   },
 };
 
