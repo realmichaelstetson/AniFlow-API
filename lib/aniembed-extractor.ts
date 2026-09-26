@@ -432,3 +432,113 @@ export async function resolveAnimexPlayStream({
     availableProviders: providers,
   };
 }
+
+export interface AnimexEpisodeSourceItem {
+  id?: string;
+  type: "SUB" | "DUB";
+  language: string;
+  videoUrl: string;
+  quality: string;
+  isHls: boolean;
+  serverName: string;
+  subtitles?: Array<{
+    id?: string;
+    language: string;
+    label: string;
+    subtitleUrl: string;
+    isDefault?: boolean;
+  }>;
+}
+
+/**
+ * Fetch all available Animex video source records (SUB & DUB) for an episode.
+ */
+export async function getAnimexEpisodeSources(
+  anilistId: number,
+  episodeNumber: number
+): Promise<AnimexEpisodeSourceItem[]> {
+  const sources: AnimexEpisodeSourceItem[] = [];
+
+  try {
+    const info = await getEmbedInfo(anilistId, episodeNumber);
+
+    // 1. Resolve SUB providers in parallel
+    await Promise.allSettled(
+      info.subProviders.map(async (p) => {
+        if (isBlockedAnimexProvider(p.id)) return;
+        let subTracks: any[] = [];
+        try {
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500));
+          const srcData = (await Promise.race([
+            getSource(info.slug, episodeNumber, "sub", p.id),
+            timeoutPromise,
+          ])) as any;
+          if (srcData?.tracks && srcData.tracks.length > 0) {
+            subTracks = srcData.tracks.map((t: any, idx: number) => ({
+              id: `${p.id}-sub-${idx}`,
+              language: t.lang || t.label || "English",
+              label: t.label || t.lang || "English",
+              subtitleUrl: `/api/proxy/subtitles?url=${encodeURIComponent(t.url)}&referer=${encodeURIComponent(srcData.headers?.Referer || "")}`,
+              isDefault: t.default !== undefined ? t.default : idx === 0,
+            }));
+          }
+        } catch {}
+
+        sources.push({
+          id: `animex-${p.id}-sub`,
+          type: "SUB",
+          language: "Japanese",
+          videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=sub&provider=${encodeURIComponent(p.id)}&format=m3u8`,
+          quality: "1080p",
+          isHls: true,
+          serverName: `${p.id.toUpperCase()} (Sub)`,
+          subtitles: subTracks.length > 0 ? subTracks : undefined,
+        });
+      })
+    );
+
+    // 2. Resolve DUB providers in parallel
+    if (info.dubProviders && info.dubProviders.length > 0) {
+      await Promise.allSettled(
+        info.dubProviders.map(async (p) => {
+          if (isBlockedAnimexProvider(p.id)) return;
+          let dubTracks: any[] = [];
+          try {
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2500));
+            const srcData = (await Promise.race([
+              getSource(info.slug, episodeNumber, "dub", p.id),
+              timeoutPromise,
+            ])) as any;
+            if (srcData?.tracks && srcData.tracks.length > 0) {
+              dubTracks = srcData.tracks.map((t: any, idx: number) => ({
+                id: `${p.id}-dub-${idx}`,
+                language: t.lang || t.label || "English",
+                label: t.label || t.lang || "English",
+                subtitleUrl: `/api/proxy/subtitles?url=${encodeURIComponent(t.url)}&referer=${encodeURIComponent(srcData.headers?.Referer || "")}`,
+                isDefault: t.default !== undefined ? t.default : idx === 0,
+              }));
+            }
+          } catch {}
+
+          sources.push({
+            id: `animex-${p.id}-dub`,
+            type: "DUB",
+            language: "English Dub",
+            videoUrl: `/api/play?slug=${encodeURIComponent(info.slug)}&anilistId=${anilistId}&episode=${episodeNumber}&type=dub&provider=${encodeURIComponent(p.id)}&format=m3u8`,
+            quality: "1080p",
+            isHls: true,
+            serverName: `${p.id.toUpperCase()} (English Dub)`,
+            subtitles: dubTracks.length > 0 ? dubTracks : undefined,
+          });
+        })
+      );
+    }
+  } catch (err: any) {
+    if (!err?.message?.includes("404")) {
+      console.warn(`[AnimexExtractor] Notice resolving sources for ${anilistId} ep ${episodeNumber}:`, err?.message || err);
+    }
+  }
+
+  return sources;
+}
+

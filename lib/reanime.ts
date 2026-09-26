@@ -513,6 +513,212 @@ export async function getReanimeServers(target: string | number, episode: number
   return fetchPromise;
 }
 
+export interface ReanimeEpisodeServers {
+  hasSub: boolean;
+  hasDub: boolean;
+  subServers: string[];
+  dubServers: string[];
+}
+
+export interface ReanimeEpisodeSourceItem {
+  id?: string;
+  type: "SUB" | "DUB";
+  language: string;
+  videoUrl: string;
+  quality: string;
+  isHls: boolean;
+  serverName: string;
+  subtitles?: Array<{
+    id?: string;
+    language: string;
+    label: string;
+    subtitleUrl: string;
+    isDefault?: boolean;
+  }>;
+}
+
+const reanimeEpisodeServersCache = new Map<string, { data: ReanimeEpisodeServers; timestamp: number }>();
+const REANIME_CACHE_TTL_MS = 10 * 60 * 1000;
+
+export async function getReanimeEpisodeServers(
+  target: string | number,
+  episode: number | string = 1
+): Promise<ReanimeEpisodeServers> {
+  if (!target) {
+    return { hasSub: false, hasDub: false, subServers: [], dubServers: [] };
+  }
+  const cacheKey = `${target}-${episode}`;
+  const cached = reanimeEpisodeServersCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < REANIME_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  try {
+    const srvData = await getReanimeServers(target, episode);
+    const sList = srvData?.servers || [];
+
+    const subServersSet = new Set<string>();
+    const dubServersSet = new Set<string>();
+
+    for (const s of sList) {
+      const rawName = (s.serverName || "").toUpperCase().trim();
+      const normName =
+        rawName.includes("HD-2") || rawName === "HD2"
+          ? "HD-2"
+          : rawName.includes("HD-1") || rawName === "HD1"
+          ? "HD-1"
+          : s.serverName || "HD-1";
+
+      if (s.dataType === "sub") {
+        subServersSet.add(normName);
+      } else if (s.dataType === "dub") {
+        dubServersSet.add(normName);
+      }
+    }
+
+    const sortServers = (arr: string[]) =>
+      arr.sort((a, b) => {
+        if (a === "HD-1" && b === "HD-2") return -1;
+        if (a === "HD-2" && b === "HD-1") return 1;
+        return a.localeCompare(b);
+      });
+
+    const subServers = sortServers(Array.from(subServersSet));
+    const dubServers = sortServers(Array.from(dubServersSet));
+
+    const result: ReanimeEpisodeServers = {
+      hasSub: subServers.length > 0,
+      hasDub: dubServers.length > 0,
+      subServers,
+      dubServers,
+    };
+
+    reanimeEpisodeServersCache.set(cacheKey, { data: result, timestamp: now });
+    return result;
+  } catch {
+    return { hasSub: false, hasDub: false, subServers: [], dubServers: [] };
+  }
+}
+
+export async function checkReanimeHasDub(
+  target: string | number,
+  episode: number | string = 1
+): Promise<boolean> {
+  const srvInfo = await getReanimeEpisodeServers(target, episode);
+  return srvInfo.hasDub;
+}
+
+const reanimeSourcesCache = new Map<string, { data: ReanimeEpisodeSourceItem[]; timestamp: number }>();
+const reanimeSourcesInFlight = new Map<string, Promise<ReanimeEpisodeSourceItem[]>>();
+const SOURCES_CACHE_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Returns all ready-to-use M3U8 video sources for an episode from Re:ANIME.
+ * If both HD-1 and HD-2 exist for DUB, returns two DUB sources:
+ * "HD-1 (English Dub)" and "HD-2 (English Dub)", and likewise for SUB!
+ */
+export async function getReanimeEpisodeSources(
+  target: string | number,
+  episode: number | string = 1
+): Promise<ReanimeEpisodeSourceItem[]> {
+  const targetStr = String(target).trim();
+  const epNum = parseInt(String(episode), 10);
+  const cacheKey = `${targetStr}-${epNum}`;
+  const now = Date.now();
+
+  const cached = reanimeSourcesCache.get(cacheKey);
+  if (cached && now - cached.timestamp < SOURCES_CACHE_TTL_MS && cached.data.length > 0) {
+    const allValid = cached.data.every((s) => !isStreamTokenExpired(s.videoUrl));
+    if (allValid) {
+      return cached.data;
+    }
+  }
+
+  const existingInFlight = reanimeSourcesInFlight.get(cacheKey);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const targetAnilistId = /^\d+$/.test(targetStr) ? parseInt(targetStr, 10) : null;
+      const streamData = await findAndStream({
+        anilistId: targetAnilistId,
+        query: !targetAnilistId ? targetStr : undefined,
+        episode: epNum,
+        server: "all",
+      });
+
+      const validServers = (streamData.all_servers || []).filter((s) => s && s.hls);
+      if (validServers.length === 0 && streamData.hls) {
+        validServers.push({
+          server: streamData.server || "HD-1",
+          audio: (streamData.audio === "dub" ? "dub" : "sub") as "sub" | "dub",
+          access_id: streamData.access_id,
+          version: streamData.version || 1,
+          hls: streamData.hls,
+          pk: streamData.pk,
+          subtitles: streamData.subtitles || [],
+        });
+      }
+
+      if (validServers.length > 0) {
+        const sources: ReanimeEpisodeSourceItem[] = [];
+        for (const s of validServers) {
+          const isDub = s.audio === "dub";
+          const aidParam = s.access_id ? `&aid=${encodeURIComponent(s.access_id)}` : "";
+          const vParam = s.version ? `&v=${s.version}` : "";
+          const qParam = targetAnilistId ? `&q=${targetAnilistId}` : `&q=${encodeURIComponent(targetStr)}`;
+          const epParam = `&ep=${epNum}`;
+          const srvParam = `&server=${encodeURIComponent(s.server || "HD-1")}`;
+          const proxyUrl = `/api/proxy/m3u8?url=${encodeURIComponent(s.hls || "")}&pk=${encodeURIComponent(s.pk || "")}&audio=${s.audio}${aidParam}${vParam}${qParam}${epParam}${srvParam}`;
+          const rawSubs = s.subtitles || streamData.subtitles || [];
+          const srvSubtitles = rawSubs.map((sub: any, idx: number) => {
+            const rawUrl = sub.url || sub.file || "";
+            const proxySubUrl = rawUrl
+              ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
+              : "";
+            return {
+              id: `${(s.server || "HD-1").toLowerCase()}-${s.audio}-${idx}`,
+              language: sub.language || sub.lang || sub.label || "en",
+              label: sub.label || sub.language || (idx === 0 ? "English" : `Subtitle ${idx + 1}`),
+              subtitleUrl: proxySubUrl,
+              isDefault: sub.default !== undefined ? sub.default : idx === 0,
+            };
+          });
+
+          sources.push({
+            id: `reanime-${(s.server || "HD-1").toLowerCase()}-${s.audio}`,
+            type: isDub ? "DUB" : "SUB",
+            language: isDub ? "English Dub" : "Japanese",
+            videoUrl: proxyUrl,
+            quality: "1080p",
+            isHls: true,
+            serverName: isDub ? `${s.server} (English Dub)` : `${s.server} (Sub)`,
+            subtitles: srvSubtitles.length > 0 ? srvSubtitles : undefined,
+          });
+        }
+        reanimeSourcesCache.set(cacheKey, { data: sources, timestamp: Date.now() });
+        if (targetAnilistId && cacheKey !== `${targetAnilistId}-${epNum}`) {
+          reanimeSourcesCache.set(`${targetAnilistId}-${epNum}`, { data: sources, timestamp: Date.now() });
+        }
+        return sources;
+      }
+    } catch (err: any) {
+      console.warn("[getReanimeEpisodeSources] Notice:", err?.message || err);
+    } finally {
+      reanimeSourcesInFlight.delete(cacheKey);
+    }
+
+    return [];
+  })();
+
+  reanimeSourcesInFlight.set(cacheKey, fetchPromise);
+  return fetchPromise;
+}
+
+
 export async function resolveAnimeSlug(query?: string | null, anilistId?: number | string | null) {
   let targetId = anilistId ? parseInt(String(anilistId), 10) : null;
   let textQuery = query;

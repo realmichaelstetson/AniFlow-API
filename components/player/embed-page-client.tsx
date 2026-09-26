@@ -58,7 +58,7 @@ export function EmbedPageClient({
     : 1;
 
   return (
-    <main className="fixed inset-0 w-screen h-screen bg-[#000000] overflow-hidden m-0 p-0">
+    <main className="fixed inset-0 w-full h-full bg-black overflow-hidden m-0 p-0">
       <EmbedPlayer
         anilistId={effectiveAnilistId}
         malId={effectiveMalId}

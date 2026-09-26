@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findAndStream } from "@/lib/reanime";
-import { resolveAnimexPlayStream } from "@/lib/aniembed-extractor";
+import { findAndStream, getReanimeEpisodeSources } from "@/lib/reanime";
+import { resolveAnimexPlayStream, getAnimexEpisodeSources } from "@/lib/aniembed-extractor";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
+
+import { ticketStore } from "@/lib/tickets";
 
 export const dynamic = "force-dynamic";
 
@@ -17,20 +19,6 @@ export async function OPTIONS() {
     headers: CORS_HEADERS,
   });
 }
-
-// In-memory ticket storage for `/embed?t={ticket}`
-export const ticketStore = new Map<
-  string,
-  {
-    anilistId?: number;
-    malId?: number;
-    episode: number;
-    audio: "sub" | "dub";
-    server: string;
-    startAt?: number;
-    createdAt: number;
-  }
->();
 
 export async function POST(request: NextRequest) {
   try {
@@ -83,6 +71,8 @@ export async function GET(request: NextRequest) {
     const dub = searchParams.get("dub") === "true" || searchParams.get("dub") === "1";
     const audio = (searchParams.get("audio") || (dub ? "dub" : "sub")) as "sub" | "dub";
     const serverParam = (searchParams.get("server") || "flow").toLowerCase();
+    const providerParam = searchParams.get("provider") || searchParams.get("providerId");
+    const slugParam = searchParams.get("slug");
     const format = searchParams.get("format");
     const wantsM3u8 =
       format === "m3u8" ||
@@ -124,23 +114,65 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // 2. Fetch all sources from BOTH Re:ANIME and AniEmbed in parallel
+    const targetIdentifier = anilistId || title || (malId ? String(malId) : "");
+    const [reanimeSources, animexSources] = await Promise.all([
+      getReanimeEpisodeSources(targetIdentifier, episode).catch(() => []),
+      anilistId ? getAnimexEpisodeSources(anilistId, episode).catch(() => []) : Promise.resolve([]),
+    ]);
+
+    const allSources = [...reanimeSources, ...animexSources];
+
+    // If caller explicitly asks for the full sources list
+    if (
+      searchParams.get("sources") === "true" ||
+      searchParams.get("action") === "sources" ||
+      format === "sources"
+    ) {
+      return NextResponse.json(
+        {
+          success: true,
+          title,
+          anilistId,
+          malId,
+          episode,
+          audio,
+          sources: allSources,
+        },
+        { status: 200, headers: CORS_HEADERS }
+      );
+    }
+
     let streamResult: any = null;
     let resolvedServer = serverParam;
 
-    // 2. Try requested server first: 'zuri' (AniEmbed) or 'flow' (Re:ANIME)
-    if (serverParam === "zuri" && anilistId) {
+    // Check if AniEmbed / Animex provider was explicitly requested
+    const isAnimexMode = Boolean(
+      providerParam ||
+      serverParam === "zuri" ||
+      serverParam === "animex" ||
+      serverParam === "aniembed" ||
+      serverParam === "yuki" ||
+      serverParam === "zuna"
+    );
+
+    // 3. Try requested server: Animex / AniEmbed or Re:ANIME
+    if (isAnimexMode && anilistId) {
       try {
         const animex = await resolveAnimexPlayStream({
           anilistId,
           episode,
           type: audio,
+          provider: providerParam || (serverParam !== "zuri" && serverParam !== "flow" ? serverParam : undefined),
+          slug: slugParam || undefined,
           title: title || undefined,
         });
 
         if (animex?.proxyM3u8) {
+          resolvedServer = animex.provider || "zuri";
           streamResult = {
             server: "Zuri",
-            serverName: `Zuri (${animex.provider.toUpperCase()})`,
+            serverName: `${animex.provider.toUpperCase()} (${audio === "dub" ? "English Dub" : "Sub"})`,
             provider: animex.provider,
             audio,
             m3u8: animex.proxyM3u8,
@@ -150,19 +182,26 @@ export async function GET(request: NextRequest) {
           };
         }
       } catch (err: any) {
-        console.warn("[/api/play] Zuri primary failed, attempting Flow fallback:", err?.message || err);
+        console.warn("[/api/play] Animex resolution notice:", err?.message || err);
       }
     }
 
-    // If 'flow' requested or 'zuri' failed, try 'flow'
+    // Try Re:ANIME if requested, or as fallback
     if (!streamResult) {
       try {
+        const flowServer =
+          serverParam.includes("hd-2") || serverParam === "hd2"
+            ? "HD-2"
+            : serverParam.includes("hd-1") || serverParam === "hd1"
+            ? "HD-1"
+            : "all";
+
         const flowData = await findAndStream({
           anilistId: anilistId || undefined,
           query: title || (malId ? String(malId) : undefined),
           episode,
           type: audio,
-          server: "all",
+          server: flowServer,
         });
 
         if (flowData?.hls) {
@@ -192,7 +231,9 @@ export async function GET(request: NextRequest) {
           const subsFormatted = (flowData.subtitles || []).map((sub: any, idx: number) => {
             const rawUrl = sub.url || sub.file || "";
             const proxySubUrl = rawUrl
-              ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
+              ? rawUrl.startsWith("/api/proxy")
+                ? rawUrl
+                : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`
               : "";
             return {
               language: sub.language || sub.lang || sub.label || "English",
@@ -203,10 +244,10 @@ export async function GET(request: NextRequest) {
             };
           });
 
-          resolvedServer = "flow";
+          resolvedServer = (flowData.server || "HD-1").toLowerCase();
           streamResult = {
             server: "Flow",
-            serverName: `Flow (${flowData.server || "HD-1"})`,
+            serverName: `${flowData.server || "HD-1"} (${audio === "dub" ? "English Dub" : "Sub"})`,
             audio: flowData.audio || audio,
             m3u8: proxyM3u8,
             fullM3u8: `${baseUrl}${proxyM3u8}`,
@@ -221,8 +262,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // If flow failed and we haven't tried Zuri yet, try Zuri as fallback
-    if (!streamResult && serverParam !== "zuri" && anilistId) {
+    // If Re:ANIME failed and we haven't tried AniEmbed yet, try AniEmbed as fallback
+    if (!streamResult && !isAnimexMode && anilistId) {
       try {
         const animex = await resolveAnimexPlayStream({
           anilistId,
@@ -232,10 +273,10 @@ export async function GET(request: NextRequest) {
         });
 
         if (animex?.proxyM3u8) {
-          resolvedServer = "zuri";
+          resolvedServer = animex.provider || "zuri";
           streamResult = {
             server: "Zuri",
-            serverName: `Zuri (${animex.provider.toUpperCase()})`,
+            serverName: `${animex.provider.toUpperCase()} (${audio === "dub" ? "English Dub" : "Sub"})`,
             provider: animex.provider,
             audio,
             m3u8: animex.proxyM3u8,
@@ -261,7 +302,7 @@ export async function GET(request: NextRequest) {
             const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowFallback.hls)}&pk=${encodeURIComponent(flowFallback.pk || "")}&audio=${audio}&q=${fallbackMapping.anilistId}&ep=${episode}`;
             streamResult = {
               server: "Flow",
-              serverName: `Flow (${flowFallback.server || "HD-1"})`,
+              serverName: `${flowFallback.server || "HD-1"} (${audio === "dub" ? "English Dub" : "Sub"})`,
               audio,
               m3u8: proxyM3u8,
               fullM3u8: `${baseUrl}${proxyM3u8}`,
@@ -284,6 +325,7 @@ export async function GET(request: NextRequest) {
           episode,
           audio,
           server: serverParam,
+          sources: allSources,
         },
         { status: 404, headers: CORS_HEADERS }
       );
@@ -306,11 +348,14 @@ export async function GET(request: NextRequest) {
         audio,
         server: resolvedServer,
         serverName: streamResult.serverName,
+        streamUrl: streamResult.m3u8,
+        url: streamResult.m3u8,
         m3u8: streamResult.m3u8,
         fullM3u8: streamResult.fullM3u8,
         subtitles: streamResult.subtitles || [],
         chapters: streamResult.chapters || null,
         allServers: streamResult.allServers || null,
+        sources: allSources,
       },
       { status: 200, headers: CORS_HEADERS }
     );

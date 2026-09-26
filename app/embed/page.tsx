@@ -1,6 +1,6 @@
 import React, { Suspense } from "react";
 import { EmbedPageClient } from "@/components/player/embed-page-client";
-import { ticketStore } from "@/app/api/play/route";
+import { ticketStore } from "@/lib/tickets";
 
 interface PageProps {
   searchParams: {

@@ -43,6 +43,54 @@ export interface SubtitleCue {
   text: string;
 }
 
+export interface VideoSourceData {
+  id: string;
+  type: "SUB" | "DUB";
+  language: string;
+  videoUrl: string;
+  quality: string;
+  isHls: boolean;
+  serverName?: string | null;
+  isDefault?: boolean;
+  subtitles?: Array<{
+    id?: string;
+    language?: string;
+    label?: string;
+    subtitleUrl: string;
+    isDefault?: boolean;
+  }>;
+}
+
+export function isNativePlayerSource(s: VideoSourceData): boolean {
+  if (!s || !s.videoUrl) return false;
+  const url = s.videoUrl.toLowerCase();
+
+  const isEmbedHost =
+    url.includes("anixo.buzz") ||
+    url.includes("megaplay.buzz") ||
+    url.includes("vidwish.live") ||
+    url.includes("otakuvid") ||
+    url.includes("otakuhg") ||
+    url.includes("zokoanime") ||
+    url.includes("videasy") ||
+    url.includes("multiembed") ||
+    url.includes("vidsrc") ||
+    url.includes("2embed") ||
+    url.includes("autoembed");
+
+  if (isEmbedHost) {
+    return false;
+  }
+
+  return Boolean(
+    s.isHls ||
+    url.includes(".m3u8") ||
+    url.includes("m3u8") ||
+    url.includes("/api/play") ||
+    url.includes("/api/proxy/m3u8")
+  );
+}
+
 export interface EmbedPlayerProps {
   anilistId?: number | null;
   malId?: number | null;
@@ -111,10 +159,13 @@ export function EmbedPlayer({
   // Server & Audio options
   const [selectedType, setSelectedType] = useState<"sub" | "dub">(initialAudio);
   const [server, setServer] = useState<string>(initialServer.toLowerCase());
+  const [sources, setSources] = useState<VideoSourceData[]>([]);
+  const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [autoSkipState, setAutoSkipState] = useState<boolean>(autoskipIntro);
   const [autoSkipOutroState, setAutoSkipOutroState] = useState<boolean>(autoskipOutro);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [animeTitle, setAnimeTitle] = useState<string>(initialTitle || "Anime");
+  const [reloadCounter, setReloadCounter] = useState<number>(0);
 
   // HLS & Qualities
   const [hlsLevels, setHlsLevels] = useState<{ index: number; name: string; height: number }[]>([]);
@@ -157,7 +208,7 @@ export function EmbedPlayer({
   // Settings Menu
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsSubMenu, setSettingsSubMenu] = useState<
-    "main" | "server" | "subtitles" | "subtitle-style" | "quality" | "speed" | "boost"
+    "main" | "server" | "server-sub" | "server-dub" | "subtitles" | "subtitle-style" | "quality" | "speed" | "boost"
   >("main");
   const [menuHeight, setMenuHeight] = useState<number | undefined>(undefined);
   const [menuMaxHeight, setMenuMaxHeight] = useState<number | undefined>(undefined);
@@ -319,19 +370,69 @@ export function EmbedPlayer({
         const data = await res.json();
         if (cancelled) return;
 
-        if (!data.streamUrl) {
+        const initialStream = data.streamUrl || data.m3u8 || data.url || data.fullM3u8;
+        if (!initialStream && (!data.sources || data.sources.length === 0)) {
           throw new Error(data.error || "No playable stream returned from server.");
         }
 
-        setStreamUrl(data.streamUrl);
+        let selectedSource: VideoSourceData | undefined;
+        if (Array.isArray(data.sources) && data.sources.length > 0) {
+          setSources(data.sources);
+          const isDub = selectedType === "dub";
+          const typeMatch = (s: VideoSourceData) => (isDub ? s.type === "DUB" : s.type === "SUB");
+          if (server === "zuri" || server === "animex") {
+            selectedSource = data.sources.find((s: VideoSourceData) => s.id?.includes("animex") && typeMatch(s));
+          } else if (server === "flow" || server === "reanime") {
+            selectedSource = data.sources.find((s: VideoSourceData) => s.id?.includes("reanime") && typeMatch(s));
+          }
+          if (!selectedSource && initialStream) {
+            selectedSource = data.sources.find((s: VideoSourceData) => s.videoUrl === initialStream);
+          }
+          if (!selectedSource) {
+            selectedSource = data.sources.find(typeMatch) || data.sources[0];
+          }
+          if (selectedSource) {
+            setActiveSourceId(selectedSource.id);
+            setStreamUrl(initialStream || selectedSource.videoUrl);
+          } else {
+            setStreamUrl(initialStream);
+          }
+        } else {
+          setStreamUrl(initialStream);
+        }
+
+        if (Array.isArray(data.chapters) && data.chapters.length > 0) {
+          const introChap = data.chapters.find((c: any) => c.title?.toLowerCase().includes("intro") || c.title?.toLowerCase().includes("op"));
+          const outroChap = data.chapters.find((c: any) => c.title?.toLowerCase().includes("outro") || c.title?.toLowerCase().includes("ed"));
+          if (introChap || outroChap) {
+            setSkipTimes((prev) => ({
+              intro: prev.intro || (introChap ? { start: introChap.start, end: introChap.end } : null),
+              outro: prev.outro || (outroChap ? { start: outroChap.start, end: outroChap.end } : null),
+            }));
+          }
+        }
+
         if (data.title) setAnimeTitle(data.title);
 
-        if (Array.isArray(data.subtitles)) {
-          setAllAvailableSubtitles(data.subtitles);
+        // Subtitles resolution
+        const rawSubs = (selectedSource?.subtitles && selectedSource.subtitles.length > 0)
+          ? selectedSource.subtitles.map((s, idx) => ({
+              id: s.id || `sub-${idx}`,
+              language: s.language || "en",
+              label: s.label || "English",
+              url: s.subtitleUrl,
+              default: s.isDefault ?? idx === 0,
+            }))
+          : Array.isArray(data.subtitles)
+          ? data.subtitles
+          : [];
+
+        if (rawSubs.length > 0) {
+          setAllAvailableSubtitles(rawSubs);
           const defaultSub =
-            data.subtitles.find((s: SubtitleTrack) => s.default) ||
-            data.subtitles.find((s: SubtitleTrack) => s.language?.toLowerCase().startsWith("en")) ||
-            data.subtitles[0];
+            rawSubs.find((s: SubtitleTrack) => s.default) ||
+            rawSubs.find((s: SubtitleTrack) => s.language?.toLowerCase().startsWith("en")) ||
+            rawSubs[0];
           if (defaultSub) {
             setActiveSubtitleTrack(defaultSub.id || defaultSub.url);
           }
@@ -360,7 +461,7 @@ export function EmbedPlayer({
     return () => {
       cancelled = true;
     };
-  }, [anilistId, malId, episodeNumber, selectedType, server, postToParent]);
+  }, [anilistId, malId, episodeNumber, selectedType, server, reloadCounter, postToParent]);
 
   // HLS player setup & Native fallback
   useEffect(() => {
@@ -1140,6 +1241,193 @@ export function EmbedPlayer({
     return found ? found.name : "1080p";
   })();
 
+  // Native player sources segregated for SUB and DUB
+  const nativeSubSources = useMemo<VideoSourceData[]>(() => {
+    const raw = sources.filter((s) => s.type === "SUB" && isNativePlayerSource(s));
+    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "SUB"));
+    const seen = new Set<string>();
+    const deduplicated: VideoSourceData[] = [];
+    for (const s of list) {
+      const u = (s.videoUrl || "").trim().toLowerCase();
+      const key = u || s.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(s);
+      }
+    }
+    return deduplicated;
+  }, [sources]);
+
+  const nativeDubSources = useMemo<VideoSourceData[]>(() => {
+    const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s));
+    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB"));
+    const seen = new Set<string>();
+    const deduplicated: VideoSourceData[] = [];
+    for (const s of list) {
+      const u = (s.videoUrl || "").trim().toLowerCase();
+      const key = u || s.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(s);
+      }
+    }
+    return deduplicated;
+  }, [sources]);
+
+  const currentSource = useMemo(() => {
+    if (activeSourceId) {
+      const found = sources.find((s) => s.id === activeSourceId);
+      if (found) return found;
+    }
+    const forType = sources.filter((s) => s.type.toLowerCase() === selectedType.toLowerCase());
+    return forType[0] || sources[0] || null;
+  }, [sources, activeSourceId, selectedType]);
+
+  const getSourceProvider = useCallback((src: VideoSourceData) => {
+    const isAnimex = Boolean(
+      src.id?.startsWith("animex-") ||
+      src.videoUrl?.includes("provider=") ||
+      src.videoUrl?.includes("providerId=") ||
+      src.serverName?.toLowerCase().includes("animex")
+    );
+    if (isAnimex) {
+      let prov = "";
+      try {
+        const parsed = new URL(src.videoUrl, "http://localhost:3000");
+        prov = parsed.searchParams.get("provider") || parsed.searchParams.get("providerId") || "";
+      } catch {}
+      if (!prov && src.serverName) {
+        const match = src.serverName.match(/^([a-zA-Z0-9_-]+)/);
+        if (match) prov = match[1];
+      }
+      if (prov) {
+        return prov.charAt(0).toUpperCase() + prov.slice(1).toLowerCase();
+      }
+      return "Animex";
+    }
+
+    const isCoolapi = Boolean(
+      src.id?.startsWith("coolapi-") ||
+      (src.videoUrl?.includes("/api/play") && !isAnimex) ||
+      src.serverName?.toLowerCase().includes("reanime") ||
+      src.serverName?.toLowerCase().includes("coolapi") ||
+      src.serverName?.toLowerCase().includes("aniflow") ||
+      src.serverName?.toLowerCase().includes("flow") ||
+      src.serverName?.toLowerCase().startsWith("hd-") ||
+      src.serverName?.toLowerCase().startsWith("hd 1") ||
+      src.serverName?.toLowerCase().startsWith("hd 2") ||
+      src.id?.startsWith("reanime-")
+    );
+    if (isCoolapi) {
+      const name = (src.serverName || "").toLowerCase();
+      const url = (src.videoUrl || "").toLowerCase();
+      if (
+        name.includes("hd-2") ||
+        name.includes("hd 2") ||
+        url.includes("server=hd-2") ||
+        url.includes("server=hd2") ||
+        url.includes("fetch8")
+      ) {
+        return "Flow 2";
+      }
+      if (
+        name.includes("hd-3") ||
+        name.includes("hd 3") ||
+        url.includes("server=hd-3") ||
+        url.includes("server=hd3")
+      ) {
+        return "Flow 3";
+      }
+      if (
+        name.includes("hd-1") ||
+        name.includes("hd 1") ||
+        url.includes("server=hd-1") ||
+        url.includes("server=hd1")
+      ) {
+        return "Flow 1";
+      }
+      return "Flow";
+    }
+
+    if (src.serverName) {
+      let cleaned = src.serverName
+        .replace(/^Consumet\s*[-–:]\s*/i, "")
+        .replace(/\(HLS auto\)/i, "")
+        .replace(/\(HLS\s*([^)]+)\)/i, "($1)")
+        .replace(/\s*\((sub|dub|english dub)[^)]*\)/i, "")
+        .trim();
+      if (cleaned) return cleaned;
+    }
+
+    return "Stream";
+  }, []);
+
+  const formatServerRouteName = useCallback((src: VideoSourceData) => {
+    return getSourceProvider(src);
+  }, [getSourceProvider]);
+
+  const formatServerRouteAudio = useCallback((src: VideoSourceData) => {
+    return src.type === "DUB" ? "English Dub" : "Sub";
+  }, []);
+
+  const formatServerRouteLabel = useCallback((src: VideoSourceData) => {
+    const name = formatServerRouteName(src);
+    const audio = formatServerRouteAudio(src);
+    return `${name} (${audio})`;
+  }, [formatServerRouteName, formatServerRouteAudio]);
+
+  const activeServerLabel = useMemo(() => {
+    if (currentSource) {
+      return formatServerRouteLabel(currentSource);
+    }
+    return selectedType === "dub" ? "Flow (English Dub)" : "Flow (Sub)";
+  }, [currentSource, formatServerRouteLabel, selectedType]);
+
+  const handleSelectSource = useCallback((src: VideoSourceData) => {
+    const curTime = videoRef.current && videoRef.current.currentTime > 0
+      ? videoRef.current.currentTime
+      : currentTime;
+    if (curTime > 0) {
+      preserveTimeRef.current = curTime;
+    }
+    isSwitchingServerRef.current = true;
+    setFatalError(null);
+    setIsLoading(true);
+
+    const newType = src.type.toLowerCase() as "sub" | "dub";
+    if (newType !== selectedType) {
+      setSelectedType(newType);
+    }
+    setActiveSourceId(src.id);
+    setStreamUrl(src.videoUrl);
+
+    if (src.subtitles && src.subtitles.length > 0) {
+      const formattedSubs: SubtitleTrack[] = src.subtitles.map((s, idx) => ({
+        id: s.id || `sub-${idx}`,
+        language: s.language || "en",
+        label: s.label || "English",
+        url: s.subtitleUrl,
+        default: s.isDefault ?? idx === 0,
+      }));
+      setAllAvailableSubtitles(formattedSubs);
+      const defaultSub = formattedSubs.find((s) => s.default) || formattedSubs[0];
+      if (defaultSub) {
+        setActiveSubtitleTrack(defaultSub.id || defaultSub.url);
+      }
+    }
+
+    setShowSettingsMenu(false);
+    showToast("success", `Switched to ${formatServerRouteName(src)} (${src.type === "DUB" ? "Dub" : "Sub"})`);
+
+    postToParent("PLAYER_EVENT", {
+      type: "source_change",
+      sourceId: src.id,
+      serverName: src.serverName,
+      audio: newType,
+      videoUrl: src.videoUrl,
+    });
+  }, [currentTime, selectedType, formatServerRouteName, showToast, postToParent]);
+
   return (
     <div
       ref={containerRef}
@@ -1148,7 +1436,6 @@ export function EmbedPlayer({
       onTouchEnd={handleTouchEnd}
       onDoubleClick={handleDoubleClick}
       style={{
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
         ...(isPortraitFs
           ? {
               position: "fixed",
@@ -1165,14 +1452,11 @@ export function EmbedPlayer({
           : {}),
       }}
       className={cn(
-        "relative w-full bg-black overflow-hidden shadow-2xl group select-none transition-all duration-300 touch-manipulation",
+        "relative w-full h-full bg-black overflow-hidden select-none transition-all duration-300 touch-manipulation font-product-sans",
         !showControls ? "cursor-none [&_*]:!cursor-none" : "cursor-default",
         isFullscreen || isPortraitFs
           ? "fixed inset-0 z-[99999] w-screen h-screen rounded-none border-0 max-h-none"
-          : cn(
-              "rounded-xl sm:rounded-2xl border border-white/10",
-              isTheater ? "aspect-[21/9] max-h-[85vh]" : "aspect-video max-h-[78vh]"
-            )
+          : "rounded-none border-0"
       )}
     >
       {/* HTML5 / HLS Video Element */}
@@ -1290,22 +1574,24 @@ export function EmbedPlayer({
 
       {/* Fatal Error Overlay */}
       {fatalError && !isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30 p-6 text-center space-y-4 animate-in fade-in duration-200">
-          <div className="w-14 h-14 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center text-amber-400 shadow-2xl">
-            <Tv className="w-7 h-7" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-40 p-4 sm:p-6 text-center space-y-3 sm:space-y-4 animate-in fade-in duration-200">
+          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center text-amber-400 shadow-2xl shrink-0">
+            <Tv className="w-6 h-6 sm:w-7 sm:h-7" />
           </div>
           <div className="space-y-1 max-w-sm">
-            <h4 className="text-sm font-semibold text-white">Stream Unavailable</h4>
-            <p className="text-xs text-zinc-400">{fatalError}</p>
+            <h4 className="text-sm font-semibold text-white font-product-sans">Stream Unavailable</h4>
+            <p className="text-xs text-zinc-400 font-product-sans">{fatalError}</p>
           </div>
           <div className="flex items-center gap-2 pt-1">
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
+                setFatalError(null);
+                setIsLoading(true);
                 setServer((prev) => (prev === "flow" ? "zuri" : "flow"));
               }}
-              className="px-4 py-2 rounded-full bg-white text-black text-xs font-semibold hover:bg-zinc-200 transition-all shadow-lg active:scale-95 cursor-pointer"
+              className="px-4 py-2 rounded-full bg-white text-black text-xs font-semibold hover:bg-zinc-200 transition-all shadow-lg active:scale-95 cursor-pointer font-product-sans"
             >
               Switch to {server === "flow" ? "Zuri" : "Flow"}
             </button>
@@ -1315,17 +1601,9 @@ export function EmbedPlayer({
                 e.stopPropagation();
                 setFatalError(null);
                 setIsLoading(true);
-                if (videoRef.current) {
-                  videoRef.current.load();
-                }
-                if (hlsRef.current && streamUrl) {
-                  hlsRef.current.loadSource(streamUrl);
-                  if (hlsRef.current.media !== videoRef.current && videoRef.current) {
-                    hlsRef.current.attachMedia(videoRef.current);
-                  }
-                }
+                setReloadCounter((prev) => prev + 1);
               }}
-              className="px-4 py-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold transition-all border border-white/10 active:scale-95 cursor-pointer"
+              className="px-4 py-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold transition-all border border-white/10 active:scale-95 cursor-pointer font-product-sans"
             >
               Retry
             </button>
@@ -1488,19 +1766,20 @@ export function EmbedPlayer({
       <div
         className={cn(
           "absolute inset-x-0 bottom-0 h-32 sm:h-40 bg-gradient-to-t from-black/50 via-black/15 to-transparent pointer-events-none transition-opacity duration-300 ease-out z-25",
-          showControls ? "opacity-100" : "opacity-0"
+          showControls && !fatalError ? "opacity-100" : "opacity-0"
         )}
       />
 
       {/* Bottom Controls Bar */}
-      <div
-        data-controls-bar="true"
-        onDoubleClick={(e) => e.stopPropagation()}
-        className={cn(
-          "absolute bottom-0 left-0 right-0 px-3 py-2.5 sm:px-5 sm:py-4 z-30 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]",
-          showControls ? "translate-y-0 pointer-events-auto" : "translate-y-[calc(100%+16px)] pointer-events-none"
-        )}
-      >
+      {!fatalError && (
+        <div
+          data-controls-bar="true"
+          onDoubleClick={(e) => e.stopPropagation()}
+          className={cn(
+            "absolute bottom-0 left-0 right-0 px-3 py-2.5 sm:px-5 sm:py-4 z-30 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] font-product-sans",
+            showControls ? "translate-y-0 pointer-events-auto" : "translate-y-[calc(100%+16px)] pointer-events-none"
+          )}
+        >
         {/* Timeline Seekbar with Apple Knob, Intro/Outro Markers & Hover Tooltip */}
         <div
           ref={timelineRef}
@@ -1844,15 +2123,18 @@ export function EmbedPlayer({
           </div>
         </div>
 
-        {/* Settings Modal Card with Apple Liquid Glass styling */}
+        {/* Settings Modal Card with shad-renew Frosted Glass styling */}
         <div
           ref={settingsMenuRef}
           style={{
+            backgroundColor: "rgba(12, 12, 12, 0.92)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
             height: menuHeight ? `${menuHeight}px` : undefined,
             maxHeight: menuMaxHeight ? `${menuMaxHeight}px` : undefined,
           }}
           className={cn(
-            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 w-[260px] sm:w-[285px] rounded-2xl bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] border border-white/10 z-50 text-white transition-[height,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
+            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 w-[260px] sm:w-[285px] rounded-xl border border-white/[0.1] shadow-2xl shadow-black/90 font-product-sans z-50 text-white transition-[height,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
             menuMaxHeight && menuHeight && menuHeight > menuMaxHeight && "overflow-y-auto player-menu-scrollbar",
             showSettingsMenu ? "scale-100 translate-y-0 pointer-events-auto" : "scale-0 translate-y-4 pointer-events-none"
           )}
@@ -1874,8 +2156,8 @@ export function EmbedPlayer({
                     <span className="text-[11px] font-semibold text-white">Server Route</span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                    <span className="truncate max-w-[110px] font-medium uppercase">
-                      {server} ({selectedType})
+                    <span className="truncate max-w-[120px] font-medium">
+                      {activeServerLabel}
                     </span>
                     <ChevronRight className="w-3 h-3 text-zinc-400" />
                   </div>
@@ -1955,46 +2237,50 @@ export function EmbedPlayer({
                   </div>
                 </button>
 
-                {/* 6. Auto-skip Intro Toggle */}
-                <div className="border-t border-white/10 pt-1 mt-1">
-                  <div className="flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] transition-colors">
+                {/* 6. Auto-skip Intro / Outro Toggles */}
+                <div className="border-t border-white/[0.08] pt-1.5 mt-1.5 space-y-1">
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/[0.04] transition-colors">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                      <span className="text-[11px] font-medium text-white">Auto Skip Intro</span>
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="text-xs font-medium text-white font-product-sans">Auto Skip Intro</span>
                     </div>
                     <button
                       type="button"
+                      role="switch"
+                      aria-checked={autoSkipState}
                       onClick={() => setAutoSkipState((p) => !p)}
                       className={cn(
-                        "w-8 h-4.5 rounded-full transition-colors relative cursor-pointer",
-                        autoSkipState ? "bg-amber-400" : "bg-white/20"
+                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                        autoSkipState ? "bg-amber-400" : "bg-[#202020] border border-white/[0.08]"
                       )}
                     >
-                      <div
+                      <span
                         className={cn(
-                          "w-3.5 h-3.5 rounded-full bg-black shadow transition-transform absolute top-0.5",
-                          autoSkipState ? "left-4" : "left-0.5"
+                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                          autoSkipState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-400"
                         )}
                       />
                     </button>
                   </div>
-                  <div className="flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] transition-colors">
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/[0.04] transition-colors">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                      <span className="text-[11px] font-medium text-white">Auto Skip Outro</span>
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="text-xs font-medium text-white font-product-sans">Auto Skip Outro</span>
                     </div>
                     <button
                       type="button"
+                      role="switch"
+                      aria-checked={autoSkipOutroState}
                       onClick={() => setAutoSkipOutroState((p) => !p)}
                       className={cn(
-                        "w-8 h-4.5 rounded-full transition-colors relative cursor-pointer",
-                        autoSkipOutroState ? "bg-amber-400" : "bg-white/20"
+                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                        autoSkipOutroState ? "bg-amber-400" : "bg-[#202020] border border-white/[0.08]"
                       )}
                     >
-                      <div
+                      <span
                         className={cn(
-                          "w-3.5 h-3.5 rounded-full bg-black shadow transition-transform absolute top-0.5",
-                          autoSkipOutroState ? "left-4" : "left-0.5"
+                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                          autoSkipOutroState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-400"
                         )}
                       />
                     </button>
@@ -2017,66 +2303,154 @@ export function EmbedPlayer({
                   <span className="text-[11px] font-bold text-white tracking-wide">Server Route</span>
                 </div>
 
-                <div className="space-y-1">
-                  <div className="text-[10px] uppercase font-bold text-zinc-400 px-2 py-0.5">Stream Source</div>
-                  {[
-                    { id: "flow", name: "Flow (ReAnime)", desc: "Flixcloud multi-server HLS" },
-                    { id: "zuri", name: "Zuri (AniEmbed)", desc: "Animex provider HLS" },
-                  ].map((srv) => {
-                    const isSelected = server === srv.id;
-                    return (
-                      <button
-                        key={srv.id}
-                        type="button"
-                        onClick={() => {
-                          const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
-                          preserveTimeRef.current = cur;
-                          setServer(srv.id);
-                          setShowSettingsMenu(false);
-                          showToast("success", `Switched to ${srv.name}`);
-                        }}
-                        className={cn(
-                          "w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-all text-left cursor-pointer",
-                          isSelected ? "bg-white/15 text-white" : "hover:bg-white/5 text-zinc-400 hover:text-white"
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
-                          <span className={cn("text-[11px] font-semibold", !isSelected && "pl-5")}>{srv.name}</span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="space-y-0.5">
+                  {/* Sub Button */}
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubMenu("server-sub")}
+                    className="w-full flex items-center justify-between px-2 py-2 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
+                  >
+                    <span className="text-[11px] font-bold text-white tracking-wide">Sub</span>
+                    <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
+                      <span>
+                        {nativeSubSources.length} {nativeSubSources.length === 1 ? "server" : "servers"}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-zinc-400" />
+                    </div>
+                  </button>
 
-                  <div className="text-[10px] uppercase font-bold text-zinc-400 px-2 pt-2 pb-0.5">Audio Track</div>
-                  {[
-                    { id: "sub", label: "Sub (Japanese audio + English subtitles)" },
-                    { id: "dub", label: "Dub (English audio)" },
-                  ].map((aud) => {
-                    const isSelected = selectedType === aud.id;
-                    return (
-                      <button
-                        key={aud.id}
-                        type="button"
-                        onClick={() => {
-                          const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
-                          preserveTimeRef.current = cur;
-                          setSelectedType(aud.id as "sub" | "dub");
-                          setShowSettingsMenu(false);
-                          showToast("success", `Audio: ${aud.id.toUpperCase()}`);
-                        }}
-                        className={cn(
-                          "w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl transition-all text-left cursor-pointer",
-                          isSelected ? "bg-white/15 text-white" : "hover:bg-white/5 text-zinc-400 hover:text-white"
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
-                          <span className={cn("text-[11px] font-semibold", !isSelected && "pl-5")}>{aud.label}</span>
+                  {/* Dub Button */}
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubMenu("server-dub")}
+                    disabled={nativeDubSources.length === 0}
+                    className={cn(
+                      "w-full flex items-center justify-between px-2 py-2 rounded-xl transition-colors group text-left",
+                      nativeDubSources.length === 0
+                        ? "opacity-40 cursor-not-allowed"
+                        : "hover:bg-white/[0.08] active:bg-white/[0.12] cursor-pointer"
+                    )}
+                  >
+                    <span className="text-[11px] font-bold text-white tracking-wide">Dub</span>
+                    <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
+                      <span>
+                        {nativeDubSources.length} {nativeDubSources.length === 1 ? "server" : "servers"}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-zinc-400" />
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-menu: Sub Servers */}
+            {settingsSubMenu === "server-sub" && (
+              <div className="animate-in fade-in slide-in-from-right-3 duration-200">
+                <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubMenu("server")}
+                    className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
+                  </button>
+                  <span className="text-[11px] font-bold text-white tracking-wide">Sub Servers</span>
+                </div>
+
+                <div className="space-y-0.5 max-h-52 overflow-y-auto overflow-x-hidden pr-1.5 player-menu-scrollbar">
+                  {nativeSubSources.length === 0 ? (
+                    <div className="py-4 px-2 text-center text-zinc-400 text-[11px]">
+                      No Sub servers available
+                    </div>
+                  ) : (
+                    nativeSubSources.map((src) => {
+                      const isSelected = (currentSource?.id === src.id) || (streamUrl === src.videoUrl);
+                      const name = formatServerRouteName(src);
+                      const audio = "Sub";
+                      return isSelected ? (
+                        <div
+                          key={src.id}
+                          className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/10 text-[11px] font-semibold text-white shadow-sm"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Check className="w-3.5 h-3.5 text-white shrink-0" />
+                            <span className="truncate">{name}</span>
+                          </div>
+                          <span className="text-[10px] font-medium text-zinc-400 shrink-0 ml-2">
+                            {audio}
+                          </span>
                         </div>
-                      </button>
-                    );
-                  })}
+                      ) : (
+                        <button
+                          key={src.id}
+                          type="button"
+                          onClick={() => handleSelectSource(src)}
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-[11px] text-zinc-400 hover:text-white transition-colors pl-7 text-left cursor-pointer group"
+                        >
+                          <span className="truncate min-w-0">{name}</span>
+                          <span className="text-[10px] font-medium text-zinc-500 group-hover:text-zinc-400 shrink-0 ml-2">
+                            {audio}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Sub-menu: Dub Servers */}
+            {settingsSubMenu === "server-dub" && (
+              <div className="animate-in fade-in slide-in-from-right-3 duration-200">
+                <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSubMenu("server")}
+                    className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
+                  </button>
+                  <span className="text-[11px] font-bold text-white tracking-wide">Dub Servers</span>
+                </div>
+
+                <div className="space-y-0.5 max-h-52 overflow-y-auto overflow-x-hidden pr-1.5 player-menu-scrollbar">
+                  {nativeDubSources.length === 0 ? (
+                    <div className="py-4 px-2 text-center text-zinc-400 text-[11px]">
+                      No Dub servers available for this episode
+                    </div>
+                  ) : (
+                    nativeDubSources.map((src) => {
+                      const isSelected = (currentSource?.id === src.id) || (streamUrl === src.videoUrl);
+                      const name = formatServerRouteName(src);
+                      const audio = "English Dub";
+                      return isSelected ? (
+                        <div
+                          key={src.id}
+                          className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/10 text-[11px] font-semibold text-white shadow-sm"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Check className="w-3.5 h-3.5 text-white shrink-0" />
+                            <span className="truncate">{name}</span>
+                          </div>
+                          <span className="text-[10px] font-medium text-zinc-400 shrink-0 ml-2">
+                            {audio}
+                          </span>
+                        </div>
+                      ) : (
+                        <button
+                          key={src.id}
+                          type="button"
+                          onClick={() => handleSelectSource(src)}
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-[11px] text-zinc-400 hover:text-white transition-colors pl-7 text-left cursor-pointer group"
+                        >
+                          <span className="truncate min-w-0">{name}</span>
+                          <span className="text-[10px] font-medium text-zinc-500 group-hover:text-zinc-400 shrink-0 ml-2">
+                            {audio}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             )}
@@ -2641,6 +3015,7 @@ export function EmbedPlayer({
           </div>
         </div>
       </div>
+      )}
 
       {/* Subtitle Styling Dialog Modal */}
       <SubtitleSettingsDialog
