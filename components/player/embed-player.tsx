@@ -241,6 +241,7 @@ export function EmbedPlayer({
   const gainNodeRef = useRef<GainNode | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const connectedVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fallbackRef = useRef<() => void>(() => {});
 
   const lastProgressEmitRef = useRef<number>(0);
 
@@ -389,49 +390,92 @@ export function EmbedPlayer({
         if (cancelled) return;
 
         const initialStream = data.streamUrl || data.m3u8 || data.url || data.fullM3u8;
-        if (!initialStream && (!data.sources || data.sources.length === 0)) {
+
+        const incomingSources: VideoSourceData[] = Array.isArray(data.sources) && data.sources.length > 0
+          ? data.sources
+          : Array.isArray(data.allServers) && data.allServers.length > 0
+          ? data.allServers
+          : [];
+
+        // Build guaranteed standard 9-provider roster for Sub & Dub
+        const idParams = `${anilistId ? `anilistId=${anilistId}&` : ""}${malId ? `malId=${malId}&` : ""}episode=${episodeNumber}`;
+        const standardFallbackProviders: VideoSourceData[] = [
+          { id: "flow-1-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow1&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 1 (Sub)" },
+          { id: "flow-1-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=flow1&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 1 (English Dub)" },
+          { id: "flow-2-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow2&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 2 (Sub)" },
+          { id: "flow-2-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=flow2&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 2 (English Dub)" },
+          { id: "animex-yuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (Sub)" },
+          { id: "animex-yuri-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (English Dub)" },
+          { id: "animex-zuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=zuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Zuri (Sub)" },
+          { id: "animeparadise-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=paradise&format=m3u8`, quality: "1080p", isHls: true, serverName: "AnimeParadise (Sub)" },
+          { id: "extract-kaido-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kaido&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaido (Sub)" },
+          { id: "extract-kaido-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=kaido&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaido (English Dub)" },
+          { id: "extract-kaa-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kaa&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaa (Sub)" },
+          { id: "consumet-hianime-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=hianime&format=m3u8`, quality: "1080p", isHls: true, serverName: "HiAnime (Sub)" },
+          { id: "consumet-hianime-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=hianime&format=m3u8`, quality: "1080p", isHls: true, serverName: "HiAnime (English Dub)" },
+          { id: "consumet-gogoanime-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=gogo&format=m3u8`, quality: "1080p", isHls: true, serverName: "Gogoanime (Sub)" },
+          { id: "consumet-gogoanime-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=gogo&format=m3u8`, quality: "1080p", isHls: true, serverName: "Gogoanime (English Dub)" },
+        ];
+
+        // Clean & ensure proxying on external URLs
+        const cleanedIncoming = incomingSources.map((s) => {
+          let u = (s.videoUrl || "").trim();
+          if ((u.startsWith("http://") || u.startsWith("https://")) && !u.includes("/api/proxy")) {
+            u = `/api/proxy/m3u8?url=${encodeURIComponent(u)}`;
+          }
+          return { ...s, videoUrl: u };
+        });
+
+        // Merge discovered streams with standard fallback routes
+        const allAvailableSources: VideoSourceData[] = [...cleanedIncoming];
+        for (const fp of standardFallbackProviders) {
+          if (!allAvailableSources.some((s) => s.id === fp.id)) {
+            allAvailableSources.push(fp);
+          }
+        }
+        setSources(allAvailableSources);
+
+        if (!initialStream && allAvailableSources.length === 0) {
           throw new Error(data.error || "No playable stream returned from server.");
         }
 
+        const isDub = selectedType === "dub";
+        const typeMatch = (s: VideoSourceData) => (isDub ? s.type === "DUB" : s.type === "SUB");
+        const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
         let selectedSource: VideoSourceData | undefined;
-        if (Array.isArray(data.sources) && data.sources.length > 0) {
-          setSources(data.sources);
-          const isDub = selectedType === "dub";
-          const typeMatch = (s: VideoSourceData) => (isDub ? s.type === "DUB" : s.type === "SUB");
-          const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
-          if (sNorm.includes("flow-2") || sNorm === "flow2") {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("flow-2") || s.id?.includes("flow2")) && typeMatch(s));
-          } else if (sNorm.includes("paradise")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("paradise") || s.serverName?.toLowerCase().includes("paradise")) && typeMatch(s));
-          } else if (sNorm.includes("kaido")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("kaido") || s.serverName?.toLowerCase().includes("kaido")) && typeMatch(s));
-          } else if (sNorm.includes("kaa")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("kaa") || s.serverName?.toLowerCase().includes("kaa")) && typeMatch(s));
-          } else if (sNorm.includes("hianime")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("hianime") || s.serverName?.toLowerCase().includes("hianime")) && typeMatch(s));
-          } else if (sNorm.includes("gogo")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("gogo") || s.serverName?.toLowerCase().includes("gogo")) && typeMatch(s));
-          } else if (sNorm.includes("yuri") || sNorm.includes("yuki")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("yuri") || s.id?.includes("yuki")) && typeMatch(s));
-          } else if (sNorm.includes("zuri") || sNorm.includes("zuna")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("zuri") || s.id?.includes("zuna")) && typeMatch(s));
-          } else if (sNorm.includes("animex")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => s.id?.includes("animex") && typeMatch(s));
-          } else if (sNorm.includes("flow") || sNorm.includes("reanime")) {
-            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("flow-1") || s.id?.includes("flow1") || s.id?.includes("reanime")) && typeMatch(s));
-          }
-          if (!selectedSource && initialStream) {
-            selectedSource = data.sources.find((s: VideoSourceData) => s.videoUrl === initialStream);
-          }
-          if (!selectedSource) {
-            selectedSource = data.sources.find(typeMatch) || data.sources[0];
-          }
-          if (selectedSource) {
-            setActiveSourceId(selectedSource.id);
-            setStreamUrl(initialStream || selectedSource.videoUrl);
-          } else {
-            setStreamUrl(initialStream);
-          }
+
+        if (sNorm.includes("flow-2") || sNorm === "flow2") {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("flow-2") || s.id?.includes("flow2")) && typeMatch(s));
+        } else if (sNorm.includes("paradise")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("paradise") || s.serverName?.toLowerCase().includes("paradise")) && typeMatch(s));
+        } else if (sNorm.includes("kaido")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("kaido") || s.serverName?.toLowerCase().includes("kaido")) && typeMatch(s));
+        } else if (sNorm.includes("kaa")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("kaa") || s.serverName?.toLowerCase().includes("kaa")) && typeMatch(s));
+        } else if (sNorm.includes("hianime")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("hianime") || s.serverName?.toLowerCase().includes("hianime")) && typeMatch(s));
+        } else if (sNorm.includes("gogo")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("gogo") || s.serverName?.toLowerCase().includes("gogo")) && typeMatch(s));
+        } else if (sNorm.includes("yuri") || sNorm.includes("yuki")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("yuri") || s.id?.includes("yuki")) && typeMatch(s));
+        } else if (sNorm.includes("zuri") || sNorm.includes("zuna")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("zuri") || s.id?.includes("zuna")) && typeMatch(s));
+        } else if (sNorm.includes("animex")) {
+          selectedSource = allAvailableSources.find((s) => s.id?.includes("animex") && typeMatch(s));
+        } else if (sNorm.includes("flow") || sNorm.includes("reanime")) {
+          selectedSource = allAvailableSources.find((s) => (s.id?.includes("flow-1") || s.id?.includes("flow1") || s.id?.includes("reanime")) && typeMatch(s));
+        }
+
+        if (!selectedSource && initialStream) {
+          selectedSource = allAvailableSources.find((s) => s.videoUrl === initialStream);
+        }
+        if (!selectedSource) {
+          selectedSource = allAvailableSources.find(typeMatch) || allAvailableSources[0];
+        }
+
+        if (selectedSource) {
+          setActiveSourceId(selectedSource.id);
+          setStreamUrl(initialStream || selectedSource.videoUrl);
         } else {
           setStreamUrl(initialStream);
         }
@@ -509,12 +553,27 @@ export function EmbedPlayer({
     }
 
     const startPos = preserveTimeRef.current || startAt || 0;
+    let networkRetryCount = 0;
+    let mediaErrorCount = 0;
+    const MAX_NETWORK_RETRIES = 3;
+    let retryTimer: NodeJS.Timeout | null = null;
 
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 90,
+        lowLatencyMode: false, // CRITICAL: false for VOD, true drops video frames causing black screen!
+        backBufferLength: 30,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        maxBufferSize: 60 * 1000 * 1000,
+        nudgeMaxRetry: 5,
+        nudgeOffset: 0.2,
+        manifestLoadingTimeOut: 20000,
+        manifestLoadingMaxRetry: 3,
+        levelLoadingTimeOut: 20000,
+        levelLoadingMaxRetry: 3,
+        fragLoadingTimeOut: 20000,
+        fragLoadingMaxRetry: 4,
       });
 
       hls.loadSource(streamUrl);
@@ -522,6 +581,8 @@ export function EmbedPlayer({
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsLoading(false);
+        networkRetryCount = 0;
+        mediaErrorCount = 0;
         const levels = data.levels.map((lvl, index) => ({
           index,
           name: lvl.height ? `${lvl.height}p` : `Level ${index + 1}`,
@@ -538,20 +599,76 @@ export function EmbedPlayer({
         });
       });
 
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        networkRetryCount = 0;
+        mediaErrorCount = 0;
+      });
+
       hls.on(Hls.Events.ERROR, (_, data) => {
+        const httpStatus = data.response?.code;
+        const isPermanentHttpError =
+          httpStatus === 401 ||
+          httpStatus === 403 ||
+          httpStatus === 404 ||
+          httpStatus === 410 ||
+          httpStatus === 500 ||
+          httpStatus === 502;
+
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              hls.startLoad();
+              // Stop infinite loops on permanent HTTP errors or if max retries exceeded
+              if (isPermanentHttpError || networkRetryCount >= MAX_NETWORK_RETRIES) {
+                console.warn(
+                  `[EmbedPlayer] Fatal network error (${httpStatus || data.details}). Failing over to alternative server...`
+                );
+                hls.destroy();
+                fallbackRef.current?.();
+                break;
+              }
+
+              networkRetryCount++;
+              const delay = networkRetryCount * 1000;
+              console.warn(
+                `[EmbedPlayer] Transient network error (${data.details}). Retrying in ${delay}ms (attempt ${networkRetryCount}/${MAX_NETWORK_RETRIES})...`
+              );
+              if (retryTimer) clearTimeout(retryTimer);
+              retryTimer = setTimeout(() => {
+                if (hlsRef.current) {
+                  hlsRef.current.startLoad();
+                }
+              }, delay);
               break;
+
             case Hls.ErrorTypes.MEDIA_ERROR:
-              hls.recoverMediaError();
+              if (mediaErrorCount === 0) {
+                mediaErrorCount++;
+                console.warn("[EmbedPlayer] Recovering from media error (attempt 1)...");
+                hls.recoverMediaError();
+              } else if (mediaErrorCount === 1) {
+                mediaErrorCount++;
+                console.warn("[EmbedPlayer] Swapping audio codec and recovering (attempt 2)...");
+                hls.swapAudioCodec();
+                hls.recoverMediaError();
+              } else {
+                console.warn("[EmbedPlayer] Unrecoverable fatal media error. Failing over...");
+                hls.destroy();
+                fallbackRef.current?.();
+              }
               break;
+
             default:
+              console.warn(`[EmbedPlayer] Unrecoverable fatal HLS error (${data.type}, ${data.details}). Failing over...`);
               hls.destroy();
-              setFatalError("Fatal playback error on stream");
-              setIsLoading(false);
+              fallbackRef.current?.();
               break;
+          }
+        } else {
+          // Handle non-fatal buffer stalls to prevent black video freezes
+          if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+            if (video && !video.paused && video.readyState >= 2) {
+              video.currentTime += 0.1;
+            }
           }
         }
       });
@@ -564,9 +681,13 @@ export function EmbedPlayer({
         if (startPos > 0) video.currentTime = startPos;
         video.play().catch(() => setIsPlaying(false));
       });
+      video.addEventListener("error", () => {
+        fallbackRef.current?.();
+      });
     }
 
     return () => {
+      if (retryTimer) clearTimeout(retryTimer);
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -1498,18 +1619,17 @@ export function EmbedPlayer({
   const nativeSubSources = useMemo<VideoSourceData[]>(() => {
     const raw = sources.filter((s) => s.type === "SUB" && isNativePlayerSource(s));
     const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "SUB"));
-    const seen = new Set<string>();
-    const deduplicated: VideoSourceData[] = [];
+    const byProv = new Map<string, VideoSourceData>();
     for (const s of list) {
-      const u = (s.videoUrl || "").trim().toLowerCase();
-      const key = u || s.id;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduplicated.push(s);
+      const prov = getSourceProvider(s).toLowerCase();
+      const existing = byProv.get(prov);
+      // Prefer direct proxied stream URL over generic route URL
+      if (!existing || (existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))) {
+        byProv.set(prov, s);
       }
     }
-    return deduplicated.sort(sortSourcesByProvider);
-  }, [sources, sortSourcesByProvider]);
+    return Array.from(byProv.values()).sort(sortSourcesByProvider);
+  }, [sources, getSourceProvider, sortSourcesByProvider]);
 
   const nativeDubSources = useMemo<VideoSourceData[]>(() => {
     // Zuri (zuna from extractor) is strictly SUB ONLY - never present in Dub
@@ -1520,18 +1640,17 @@ export function EmbedPlayer({
     };
     const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s) && isNotZuri(s));
     const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB" && isNotZuri(s)));
-    const seen = new Set<string>();
-    const deduplicated: VideoSourceData[] = [];
+    const byProv = new Map<string, VideoSourceData>();
     for (const s of list) {
-      const u = (s.videoUrl || "").trim().toLowerCase();
-      const key = u || s.id;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduplicated.push(s);
+      const prov = getSourceProvider(s).toLowerCase();
+      const existing = byProv.get(prov);
+      // Prefer direct proxied stream URL over generic route URL
+      if (!existing || (existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))) {
+        byProv.set(prov, s);
       }
     }
-    return deduplicated.sort(sortSourcesByProvider);
-  }, [sources, sortSourcesByProvider]);
+    return Array.from(byProv.values()).sort(sortSourcesByProvider);
+  }, [sources, getSourceProvider, sortSourcesByProvider]);
 
   const currentSource = useMemo(() => {
     if (activeSourceId) {
@@ -1578,6 +1697,19 @@ export function EmbedPlayer({
     if (newType !== selectedType) {
       setSelectedType(newType);
     }
+
+    const prov = getSourceProvider(src).toLowerCase();
+    let srvCode = "flow1";
+    if (prov.includes("flow 2") || prov.includes("flow-2")) srvCode = "flow2";
+    else if (prov.includes("paradise")) srvCode = "paradise";
+    else if (prov.includes("kaido")) srvCode = "kaido";
+    else if (prov.includes("kaa")) srvCode = "kaa";
+    else if (prov.includes("hianime")) srvCode = "hianime";
+    else if (prov.includes("gogo")) srvCode = "gogo";
+    else if (prov.includes("yuri") || prov.includes("yuki")) srvCode = "yuri";
+    else if (prov.includes("zuri") || prov.includes("zuna")) srvCode = "zuri";
+    setServer(srvCode);
+
     setActiveSourceId(src.id);
     setStreamUrl(src.videoUrl);
 
@@ -1606,7 +1738,36 @@ export function EmbedPlayer({
       audio: newType,
       videoUrl: src.videoUrl,
     });
-  }, [currentTime, selectedType, formatServerRouteName, showToast, postToParent]);
+  }, [currentTime, selectedType, getSourceProvider, formatServerRouteName, showToast, postToParent]);
+
+  const handleFallbackToNextServer = useCallback(() => {
+    const isDub = selectedType === "dub";
+    const available = isDub ? nativeDubSources : nativeSubSources;
+    if (available.length <= 1) {
+      setFatalError("Stream unavailable on any server");
+      setIsLoading(false);
+      return;
+    }
+
+    const currentIndex = available.findIndex(
+      (s) => s.id === activeSourceId || s.videoUrl === streamUrl
+    );
+    const nextIndex = (currentIndex + 1) % available.length;
+    const nextServer = available[nextIndex];
+
+    if (nextServer && nextServer.id !== activeSourceId) {
+      console.warn(`[EmbedPlayer] Auto-failing over to alternative server: ${formatServerRouteName(nextServer)}`);
+      showToast("refreshing", `Auto-switching to ${formatServerRouteName(nextServer)}...`);
+      handleSelectSource(nextServer);
+    } else {
+      setFatalError("Playback failed on all available servers");
+      setIsLoading(false);
+    }
+  }, [selectedType, nativeDubSources, nativeSubSources, activeSourceId, streamUrl, formatServerRouteName, showToast, handleSelectSource]);
+
+  useEffect(() => {
+    fallbackRef.current = handleFallbackToNextServer;
+  }, [handleFallbackToNextServer]);
 
   // Current player state snapshot
   const getPlayerState = useCallback(() => {
@@ -1805,7 +1966,7 @@ export function EmbedPlayer({
         onError={(e) => {
           console.warn("HTML5 video error:", e);
           setIsLoading(false);
-          setFatalError("Playback error on this server.");
+          fallbackRef.current?.();
         }}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={() => {
