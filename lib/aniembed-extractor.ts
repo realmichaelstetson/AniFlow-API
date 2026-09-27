@@ -198,7 +198,8 @@ export async function getEmbedInfo(
     return cached.data;
   }
 
-  let knownSlug = animeSlugCache.get(anilistId);
+  const numId = typeof anilistId === "number" ? anilistId : parseInt(String(anilistId), 10);
+  let knownSlug = animeSlugCache.get(numId);
 
   if (knownSlug) {
     let servers = { subProviders: [] as AnimexProvider[], dubProviders: [] as AnimexProvider[] };
@@ -210,11 +211,13 @@ export async function getEmbedInfo(
       { id: "yuki", default: true, tip: "Soft sub" },
       { id: "zuna", default: false, tip: "Zuna" },
     ];
-    const dubProviders = servers.dubProviders || [];
+    const dubProviders = (servers.dubProviders && servers.dubProviders.length > 0) ? servers.dubProviders : [
+      { id: "yuki", default: true, tip: "Soft sub" },
+    ];
 
     const parsedInfo: AnimexEmbedInfo = {
       slug: knownSlug,
-      anilistId,
+      anilistId: numId,
       malId: 0,
       episodeNumber: episode,
       subProviders,
@@ -370,7 +373,7 @@ export async function getSource(
       ...ANIMEX_HEADERS,
       "Sec-Fetch-Site": "cross-site",
     },
-    signal: AbortSignal.timeout(3500),
+    signal: AbortSignal.timeout(6000),
   });
 
   if (!res.ok) {
@@ -473,10 +476,14 @@ export async function resolveAnimexPlayStream({
   let result: AnimexSourceResult | null = null;
   let selectedProvider = "";
 
+  const seenMapped = new Set<string>();
   for (const prov of candidateProviders) {
+    const mappedProv =
+      prov.toLowerCase() === "yuri" ? "yuki" : prov.toLowerCase() === "zuri" ? "zuna" : prov.toLowerCase();
+    if (seenMapped.has(mappedProv)) continue;
+    seenMapped.add(mappedProv);
+
     try {
-      const mappedProv =
-        prov.toLowerCase() === "yuri" ? "yuki" : prov.toLowerCase() === "zuri" ? "zuna" : prov;
       const res = await getSource(targetSlug, episode, type, mappedProv);
       if (res?.sources && res.sources.length > 0 && res.sources[0]?.url) {
         const streamUrl = res.sources[0].url.toLowerCase();

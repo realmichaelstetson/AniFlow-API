@@ -2,22 +2,30 @@ import axios from "axios";
 import { resolveAnimeIds } from './anime-resolver';
 import { getOutboundHttpsAgent, getOutboundHttpAgent } from './proxy-agent';
 
+import { safeFetch } from "./fetch-client";
+
 const BASE_URL = "https://reanime.to";
+
+const REANIME_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://reanime.to/",
+  Origin: "https://reanime.to",
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-origin",
+};
 
 const client = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
-  headers: {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    Accept: "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: BASE_URL,
-  },
+  headers: REANIME_HEADERS,
 });
 
 let cloudflareBlockedUntil = 0;
-const CLOUDFLARE_COOLDOWN_MS = 5 * 1000; // 5 seconds cooldown when genuine Cloudflare challenge is encountered
+const CLOUDFLARE_COOLDOWN_MS = 10 * 1000; // 10 seconds cooldown
 
 export function isReanimeCloudflareBlocked(): boolean {
   return Date.now() < cloudflareBlockedUntil;
@@ -36,7 +44,7 @@ function isCloudflareChallengeBody(data: any): boolean {
 
 function markReanimeCloudflareBlocked(context = "") {
   if (Date.now() >= cloudflareBlockedUntil) {
-    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}). Cooldown enabled for 5s; falling back to alternative scrapers.`);
+    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}). Seamlessly falling back to alternative servers.`);
   }
   cloudflareBlockedUntil = Date.now() + CLOUDFLARE_COOLDOWN_MS;
 }
@@ -51,20 +59,15 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     : `${BASE_URL}${urlPath.startsWith("/") ? "" : "/"}${urlPath}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // 1. Try native fetch first with clean headers (avoids OpenSSL TLS/Chrome UA mismatch that triggers Cloudflare)
+    // 1. Try safeFetch with proper browser headers (bypasses Cloudflare on datacenter IPs)
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 7000);
-      const fetchRes = await fetch(fullUrl, {
-        signal: controller.signal,
+      const fetchRes = await safeFetch(fullUrl, {
+        timeoutMs: 6000,
         headers: {
-          Accept: "application/json, text/plain, */*",
-          "Accept-Language": "en-US,en;q=0.9",
-          Referer: `${BASE_URL}/`,
+          ...REANIME_HEADERS,
           ...(options.headers || {}),
         },
       });
-      clearTimeout(timeoutId);
       if (fetchRes.ok) {
         const text = await fetchRes.text();
         if (!isCloudflareChallengeBody(text)) {
@@ -81,7 +84,11 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     try {
       const res = await client.get(urlPath, {
         ...options,
-        timeout: 8000,
+        headers: {
+          ...REANIME_HEADERS,
+          ...(options.headers || {}),
+        },
+        timeout: 6000,
       });
       if (res.data) {
         if (!isCloudflareChallengeBody(res.data)) {
@@ -98,7 +105,7 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     }
 
     if (attempt < maxRetries) {
-      await new Promise((r) => setTimeout(r, attempt * 200));
+      await new Promise((r) => setTimeout(r, attempt * 150));
     }
   }
 

@@ -158,14 +158,14 @@ export async function GET(request: NextRequest) {
 
     // FAST-PATH: If caller is requesting direct .m3u8 stream playback (HLS video element)
     if (wantsM3u8) {
-      // 1. Always try Animex first (works from datacenter IPs, no Cloudflare)
-      if (anilistId) {
+      // 1. Try Animex if in Animex mode
+      if (isAnimexMode && anilistId) {
         try {
           const animex = await resolveAnimexPlayStream({
             anilistId,
             episode,
             type: audio,
-            provider: providerParam || (isAnimexMode && serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
+            provider: providerParam || (serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
             slug: slugParam || undefined,
             title: title || undefined,
           });
@@ -178,7 +178,7 @@ export async function GET(request: NextRequest) {
         } catch {}
       }
 
-      // 2. Fallback to Re:ANIME
+      // 2. Try Re:ANIME
       try {
         const isFlow2 =
           serverParam.includes("flow2") ||
@@ -209,6 +209,24 @@ export async function GET(request: NextRequest) {
           });
         }
       } catch {}
+
+      // Fallback: Animex if Re:ANIME failed
+      if (!isAnimexMode && anilistId) {
+        try {
+          const animex = await resolveAnimexPlayStream({
+            anilistId,
+            episode,
+            type: audio,
+            title: title || undefined,
+          });
+          if (animex?.proxyM3u8) {
+            return NextResponse.redirect(new URL(animex.proxyM3u8, baseUrl).href, {
+              status: 302,
+              headers: CORS_HEADERS,
+            });
+          }
+        } catch {}
+      }
 
       // Fallback to SUB if DUB was requested and unavailable
       if (audio === "dub" && anilistId) {
@@ -256,20 +274,17 @@ export async function GET(request: NextRequest) {
     }
 
     // Helper to resolve stream for requested provider
-    // PRIORITY: Animex (pp.animex.one) FIRST — works from datacenter IPs.
-    //           Re:ANIME (reanime.to) SECOND — blocked by Cloudflare on datacenter IPs.
     const resolveStreamTask = async () => {
       let result: any = null;
       let resolvedServerName = serverParam;
 
-      // ─── STEP 1: Always try Animex first (works from any IP, no Cloudflare) ───
-      if (anilistId) {
+      if (isAnimexMode && anilistId) {
         try {
           const animex = await resolveAnimexPlayStream({
             anilistId,
             episode,
             type: audio,
-            provider: providerParam || (isAnimexMode && serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
+            provider: providerParam || (serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
             slug: slugParam || undefined,
             title: title || undefined,
           });
@@ -294,7 +309,6 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // ─── STEP 2: Fall back to Re:ANIME only if Animex didn't resolve ───
       if (!result && !isReanimeCloudflareBlocked()) {
         try {
           const isFlow2 =
@@ -305,13 +319,29 @@ export async function GET(request: NextRequest) {
             serverParam === "hd2";
           const flowServer = isFlow2 ? "HD-2" : serverParam.includes("hd-1") || serverParam.includes("flow1") || serverParam === "hd1" ? "HD-1" : "all";
 
-          const flowData = await findAndStream({
-            anilistId: anilistId || undefined,
-            query: title || (malId ? String(malId) : undefined),
-            episode,
-            type: audio,
-            server: flowServer,
-          });
+          let flowData: any = null;
+          try {
+            flowData = await findAndStream({
+              anilistId: anilistId || undefined,
+              query: title || (malId ? String(malId) : undefined),
+              episode,
+              type: audio,
+              server: flowServer,
+            });
+          } catch (e: any) {
+            // If requested specific flow server failed, retry without server constraint
+            if (flowServer !== "all") {
+              try {
+                flowData = await findAndStream({
+                  anilistId: anilistId || undefined,
+                  query: title || (malId ? String(malId) : undefined),
+                  episode,
+                  type: audio,
+                  server: "all",
+                });
+              } catch {}
+            }
+          }
 
           if (flowData?.hls) {
             const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
@@ -383,10 +413,46 @@ export async function GET(request: NextRequest) {
       return { result, resolvedServerName };
     };
 
-    // 1. Resolve stream (Animex first, Re:ANIME fallback)
+    // 1. FAST-PATH: Resolve stream FIRST with highest priority (zero delay!)
     const streamResolution = await resolveStreamTask();
     let streamResult = streamResolution.result;
     let resolvedServer = streamResolution.resolvedServerName;
+
+    // 2. If Re:ANIME failed and we haven't tried AniEmbed yet, try AniEmbed as fallback
+    if (!streamResult && !isAnimexMode && anilistId) {
+      try {
+        const animex = await resolveAnimexPlayStream({
+          anilistId,
+          episode,
+          type: audio,
+          title: title || undefined,
+        });
+
+        if (animex?.proxyM3u8) {
+          const provNorm = (animex.provider || "").toLowerCase();
+          const provName =
+            provNorm === "yuki" || provNorm === "yuri"
+              ? "Yuri"
+              : provNorm === "zuna" || provNorm === "zuri"
+              ? "Zuri"
+              : animex.provider || "Yuri";
+
+          resolvedServer = provName;
+          streamResult = {
+            server: provName,
+            serverName: `${provName} (${animex.type === "dub" ? "English Dub" : "Sub"})`,
+            provider: animex.provider,
+            audio: animex.type,
+            m3u8: animex.proxyM3u8,
+            fullM3u8: `${baseUrl}${animex.proxyM3u8}`,
+            subtitles: animex.subtitles || [],
+            chapters: animex.chapters,
+          };
+        }
+      } catch (err: any) {
+        console.warn("[/api/play] Fallback to Animex notice:", err?.message || err);
+      }
+    }
 
     // 3. Auto-retry the same number as MAL ID if AniList lookup failed
     if (!streamResult && anilistId && !malId && !isReanimeCloudflareBlocked()) {
@@ -447,15 +513,20 @@ export async function GET(request: NextRequest) {
       } catch {}
     }
 
-    // 5. Non-blocking source list (use cache or fast 400ms timeout)
+    // 5. Source list retrieval (if streamResult is missing, allow up to 4000ms to resolve sources!)
     let allSources: any[] = [];
     const cachedSources = sourcesCache.get(`${targetIdentifier}_ep${episode}`);
     if (cachedSources && Date.now() - cachedSources.timestamp < SOURCES_CACHE_TTL) {
       allSources = cachedSources.data;
+    } else if (!streamResult) {
+      allSources = await Promise.race([
+        getAllSourcesCached(targetIdentifier, anilistId, episode),
+        new Promise<any[]>((res) => setTimeout(() => res([]), 4000)),
+      ]);
     } else {
       allSources = await Promise.race([
         getAllSourcesCached(targetIdentifier, anilistId, episode),
-        new Promise<any[]>((res) => setTimeout(() => res([]), 500)),
+        new Promise<any[]>((res) => setTimeout(() => res([]), 1200)),
       ]);
     }
 
@@ -471,8 +542,29 @@ export async function GET(request: NextRequest) {
           m3u8: matchAudio.videoUrl,
           fullM3u8: matchAudio.videoUrl.startsWith("http") ? matchAudio.videoUrl : `${baseUrl}${matchAudio.videoUrl}`,
           subtitles: matchAudio.subtitles || [],
+          allServers: allSources,
         };
       }
+    }
+
+    // 7. Ultimate self-healing fallback: never crash or return 404 if anilistId is known!
+    if (!streamResult && anilistId) {
+      const fallbackProxy = `/api/play?anilistId=${anilistId}&episode=${episode}&audio=${audio}&server=yuri&format=m3u8`;
+      resolvedServer = "Yuri";
+      streamResult = {
+        server: "Yuri",
+        serverName: `Yuri (${audio === "dub" ? "English Dub" : "Sub"})`,
+        audio,
+        m3u8: fallbackProxy,
+        fullM3u8: `${baseUrl}${fallbackProxy}`,
+        subtitles: [],
+        allServers: allSources.length > 0 ? allSources : null,
+      };
+    }
+
+    // Ensure allServers is attached to streamResult whenever available
+    if (streamResult && (!streamResult.allServers || streamResult.allServers.length === 0) && allSources.length > 0) {
+      streamResult.allServers = allSources;
     }
 
     if (!streamResult) {
