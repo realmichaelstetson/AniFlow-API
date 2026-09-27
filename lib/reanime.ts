@@ -1,31 +1,22 @@
 import axios from "axios";
-import { resolveAnimeIds } from './anime-resolver';
-import { getOutboundHttpsAgent, getOutboundHttpAgent } from './proxy-agent';
-
-import { safeFetch } from "./fetch-client";
+import { resolveAnimeIds } from "./anime-resolver";
 
 const BASE_URL = "https://reanime.to";
-
-const REANIME_HEADERS: Record<string, string> = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  Accept: "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.9",
-  Referer: "https://reanime.to/",
-  Origin: "https://reanime.to",
-  "Sec-Fetch-Dest": "empty",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Site": "same-origin",
-};
 
 const client = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
-  headers: REANIME_HEADERS,
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: BASE_URL,
+  },
 });
 
 let cloudflareBlockedUntil = 0;
-const CLOUDFLARE_COOLDOWN_MS = 10 * 1000; // 10 seconds cooldown
+const CLOUDFLARE_COOLDOWN_MS = 5 * 1000; // 5 seconds cooldown when genuine Cloudflare challenge is encountered
 
 export function isReanimeCloudflareBlocked(): boolean {
   return Date.now() < cloudflareBlockedUntil;
@@ -42,9 +33,20 @@ function isCloudflareChallengeBody(data: any): boolean {
   );
 }
 
+let gotScrapingModule: any = null;
+async function getGotScraping() {
+  if (!gotScrapingModule) {
+    try {
+      const mod: any = await import("got-scraping");
+      gotScrapingModule = mod.gotScraping || mod.default?.gotScraping || mod.default || mod;
+    } catch {}
+  }
+  return gotScrapingModule;
+}
+
 function markReanimeCloudflareBlocked(context = "") {
   if (Date.now() >= cloudflareBlockedUntil) {
-    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}). Seamlessly falling back to alternative servers.`);
+    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}). Cooldown enabled for 5s; falling back to alternative scrapers.`);
   }
   cloudflareBlockedUntil = Date.now() + CLOUDFLARE_COOLDOWN_MS;
 }
@@ -59,49 +61,87 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     : `${BASE_URL}${urlPath.startsWith("/") ? "" : "/"}${urlPath}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // 1. Try safeFetch with proper browser headers (bypasses Cloudflare on datacenter IPs)
+    // 1. Try with got-scraping first (mimics real browser TLS/HTTP2 to bypass Cloudflare WAF)
     try {
-      const fetchRes = await safeFetch(fullUrl, {
-        timeoutMs: 6000,
-        headers: {
-          ...REANIME_HEADERS,
-          ...(options.headers || {}),
-        },
+      const got = await getGotScraping();
+      if (got) {
+        const res = await got.get(fullUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Accept: "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            Referer: BASE_URL,
+            ...(options.headers || {}),
+          },
+          timeout: { request: 4500 },
+        });
+        if (res.body) {
+          if (isCloudflareChallengeBody(res.body)) {
+            markReanimeCloudflareBlocked(urlPath);
+            return null;
+          }
+          try {
+            return JSON.parse(res.body);
+          } catch {
+            return res.body;
+          }
+        }
+      }
+    } catch (gotErr: any) {
+      if (isCloudflareChallengeBody(gotErr?.response?.body)) {
+        markReanimeCloudflareBlocked(urlPath);
+        return null;
+      }
+    }
+
+    // 2. Try with axios (fast timeout 3500ms)
+    try {
+      const res = await client.get(urlPath, {
+        ...options,
+        timeout: 3500,
       });
-      if (fetchRes.ok) {
+      if (res.data) {
+        if (isCloudflareChallengeBody(res.data)) {
+          markReanimeCloudflareBlocked(urlPath);
+          return null;
+        }
+        return res.data;
+      }
+    } catch (err: any) {
+      if (isCloudflareChallengeBody(err?.response?.data)) {
+        markReanimeCloudflareBlocked(urlPath);
+        return null;
+      }
+      // 3. Fallback to native fetch (3500ms timeout)
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        const fetchRes = await fetch(fullUrl, {
+          signal: controller.signal,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Accept: "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            Referer: BASE_URL,
+            ...(options.headers || {}),
+          },
+        });
+        clearTimeout(timeoutId);
         const text = await fetchRes.text();
-        if (!isCloudflareChallengeBody(text)) {
+        if (isCloudflareChallengeBody(text)) {
+          markReanimeCloudflareBlocked(urlPath);
+          return null;
+        }
+        if (fetchRes.ok && text) {
           try {
             return JSON.parse(text);
           } catch {
             return text;
           }
         }
-      }
-    } catch {}
-
-    // 2. Try with axios
-    try {
-      const res = await client.get(urlPath, {
-        ...options,
-        headers: {
-          ...REANIME_HEADERS,
-          ...(options.headers || {}),
-        },
-        timeout: 6000,
-      });
-      if (res.data) {
-        if (!isCloudflareChallengeBody(res.data)) {
-          return res.data;
-        }
-      }
-    } catch (err: any) {
-      if (isCloudflareChallengeBody(err?.response?.data)) {
-        if (attempt === maxRetries) {
-          markReanimeCloudflareBlocked(urlPath);
-          return null;
-        }
-      }
+      } catch {}
     }
 
     if (attempt < maxRetries) {
@@ -109,7 +149,6 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     }
   }
 
-  markReanimeCloudflareBlocked(urlPath);
   return null;
 }
 
@@ -531,7 +570,6 @@ export interface ReanimeEpisodeServers {
 }
 
 export interface ReanimeEpisodeSourceItem {
-  id?: string;
   type: "SUB" | "DUB";
   language: string;
   videoUrl: string;
@@ -697,9 +735,7 @@ export async function getReanimeEpisodeSources(
             };
           });
 
-          const srvNum = (s.server || "").includes("2") ? "2" : "1";
           sources.push({
-            id: `flow-${srvNum}-${isDub ? "dub" : "sub"}`,
             type: isDub ? "DUB" : "SUB",
             language: isDub ? "English Dub" : "Japanese",
             videoUrl: proxyUrl,
@@ -756,8 +792,6 @@ export async function resolveAnimeSlug(query?: string | null, anilistId?: number
   // If AniList ID provided:
   if (targetId) {
     let titleToSearch: string | null = null;
-
-
 
     // 1. Try AniList GraphQL
     if (!titleToSearch) {
@@ -825,7 +859,7 @@ export async function resolveAnimeSlug(query?: string | null, anilistId?: number
       const cleanQ = textQuery
         .replace(/\s*\([^)]*\)/g, "")
         .replace(/\s*(?:Season\s*\d+|2nd\s*Season|3rd\s*Season|4th\s*Season|Part\s*\d+|cour\s*\d+).*$/i, "")
-        .replace(/[:\-â€“â€”]+/g, " ")
+        .replace(/[:\-–—]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
       if (cleanQ && cleanQ.toLowerCase() !== textQuery.toLowerCase()) {
@@ -1793,5 +1827,4 @@ export async function getReanimeBackdrop(target: string | number): Promise<strin
   reanimeBackdropCache.set(key, { url: null, timestamp: Date.now() });
   return null;
 }
-
 

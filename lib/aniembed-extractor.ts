@@ -160,7 +160,7 @@ export async function getServers(slug: string, episode: number): Promise<{
       ...ANIMEX_HEADERS,
       "Sec-Fetch-Site": "cross-site",
     },
-    signal: AbortSignal.timeout(6000),
+    signal: AbortSignal.timeout(3000),
   });
 
   if (!res.ok) {
@@ -373,7 +373,7 @@ export async function getSource(
       ...ANIMEX_HEADERS,
       "Sec-Fetch-Site": "cross-site",
     },
-    signal: AbortSignal.timeout(6000),
+    signal: AbortSignal.timeout(3500),
   });
 
   if (!res.ok) {

@@ -116,6 +116,14 @@ export async function GET(request: NextRequest) {
     if (!effectiveReferer) {
       if (targetUrl.includes("flixcloud") || targetUrl.includes("atomic4cdn")) {
         effectiveReferer = "https://flixcloud.cc/";
+      } else if (targetUrl.includes("animeparadise")) {
+        effectiveReferer = "https://animeparadise.moe/";
+      } else if (targetUrl.includes("vixcloud")) {
+        effectiveReferer = "https://vixcloud.co/";
+      } else if (targetUrl.includes("megaplay") || targetUrl.includes("akirax")) {
+        effectiveReferer = "https://megaplay.buzz/";
+      } else if (targetUrl.includes("megacloud") || targetUrl.includes("rapid-cloud") || targetUrl.includes("rabbitstream")) {
+        effectiveReferer = "https://megacloud.tv/";
       } else {
         try {
           const parsed = new URL(targetUrl);

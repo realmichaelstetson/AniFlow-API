@@ -21,6 +21,9 @@ const nextConfig = {
       },
     ];
   },
+  experimental: {
+    serverComponentsExternalPackages: ["@consumet/extensions", "got-scraping", "anime-sdk"],
+  },
 };
 
 export default nextConfig;
