@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findAndStream, getReanimeEpisodeSources } from "@/lib/reanime";
+import { findAndStream, getReanimeEpisodeSources, isReanimeCloudflareBlocked } from "@/lib/reanime";
 import { resolveAnimexPlayStream, getAnimexEpisodeSources } from "@/lib/aniembed-extractor";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
 
@@ -27,8 +27,12 @@ async function getAllSourcesCached(
     return cached.data;
   }
 
+  const reanimePromise = isReanimeCloudflareBlocked()
+    ? Promise.resolve([])
+    : getReanimeEpisodeSources(targetIdentifier, episode).catch(() => []);
+
   const [reanimeSources, animexSources] = await Promise.all([
-    getReanimeEpisodeSources(targetIdentifier, episode).catch(() => []),
+    reanimePromise,
     anilistId ? getAnimexEpisodeSources(anilistId, episode).catch(() => []) : Promise.resolve([]),
   ]);
   const all = [...reanimeSources, ...animexSources];
@@ -288,7 +292,7 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      if (!result) {
+      if (!result && !isReanimeCloudflareBlocked()) {
         try {
           const isFlow2 =
             serverParam.includes("flow2") ||
@@ -368,16 +372,12 @@ export async function GET(request: NextRequest) {
       return { result, resolvedServerName };
     };
 
-    // Run stream resolution and source fetching in parallel
-    const [streamResolution, allSources] = await Promise.all([
-      resolveStreamTask(),
-      getAllSourcesCached(targetIdentifier, anilistId, episode),
-    ]);
-
+    // 1. FAST-PATH: Resolve stream FIRST with highest priority (zero delay!)
+    const streamResolution = await resolveStreamTask();
     let streamResult = streamResolution.result;
     let resolvedServer = streamResolution.resolvedServerName;
 
-    // If Re:ANIME failed and we haven't tried AniEmbed yet, try AniEmbed as fallback
+    // 2. If Re:ANIME failed and we haven't tried AniEmbed yet, try AniEmbed as fallback
     if (!streamResult && !isAnimexMode && anilistId) {
       try {
         const animex = await resolveAnimexPlayStream({
@@ -399,9 +399,9 @@ export async function GET(request: NextRequest) {
           resolvedServer = provName;
           streamResult = {
             server: provName,
-            serverName: `${provName} (${audio === "dub" ? "English Dub" : "Sub"})`,
+            serverName: `${provName} (${animex.type === "dub" ? "English Dub" : "Sub"})`,
             provider: animex.provider,
-            audio,
+            audio: animex.type,
             m3u8: animex.proxyM3u8,
             fullM3u8: `${baseUrl}${animex.proxyM3u8}`,
             subtitles: animex.subtitles || [],
@@ -413,8 +413,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Auto-retry the same number as MAL ID if AniList lookup failed
-    if (!streamResult && anilistId && !malId) {
+    // 3. Auto-retry the same number as MAL ID if AniList lookup failed
+    if (!streamResult && anilistId && !malId && !isReanimeCloudflareBlocked()) {
       try {
         const fallbackMapping = await resolveFromMalId(anilistId);
         if (fallbackMapping?.anilistId && fallbackMapping.anilistId !== anilistId) {
@@ -436,6 +436,18 @@ export async function GET(request: NextRequest) {
           }
         }
       } catch {}
+    }
+
+    // 4. Non-blocking source list (use cache or fast 400ms timeout)
+    let allSources: any[] = [];
+    const cachedSources = sourcesCache.get(`${targetIdentifier}_ep${episode}`);
+    if (cachedSources && Date.now() - cachedSources.timestamp < SOURCES_CACHE_TTL) {
+      allSources = cachedSources.data;
+    } else {
+      allSources = await Promise.race([
+        getAllSourcesCached(targetIdentifier, anilistId, episode),
+        new Promise<any[]>((res) => setTimeout(() => res([]), 400)),
+      ]);
     }
 
     if (!streamResult) {

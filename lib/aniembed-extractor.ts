@@ -335,7 +335,7 @@ export async function getSource(
       ...ANIMEX_HEADERS,
       "Sec-Fetch-Site": "cross-site",
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(3500),
   });
 
   if (!res.ok) {
@@ -425,6 +425,15 @@ export async function resolveAnimexPlayStream({
     candidateProviders.push("yuki");
   }
 
+  // Optimize speed: for SUB, prioritize 'zuna' (Zuri) first as it responds in ~600ms
+  if (type === "sub") {
+    const zIdx = candidateProviders.indexOf("zuna");
+    if (zIdx > -1) {
+      candidateProviders.splice(zIdx, 1);
+    }
+    candidateProviders.unshift("zuna");
+  }
+
   let lastError: any = null;
   let result: AnimexSourceResult | null = null;
   let selectedProvider = "";
@@ -455,6 +464,19 @@ export async function resolveAnimexPlayStream({
       }
     } catch (err: any) {
       lastError = err;
+    }
+  }
+
+  if (!result || !result.sources?.[0] || !selectedProvider) {
+    if (type === "dub") {
+      try {
+        const subRes = await getSource(targetSlug, episode, "sub", "zuna");
+        if (subRes?.sources && subRes.sources.length > 0 && subRes.sources[0]?.url) {
+          result = subRes;
+          selectedProvider = "Zuri";
+          type = "sub";
+        }
+      } catch {}
     }
   }
 

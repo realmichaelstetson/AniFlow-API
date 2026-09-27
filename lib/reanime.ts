@@ -30,12 +30,12 @@ export const FLIXCLOUD_HEADERS: Record<string, string> = {
 
 const client = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  timeout: 2500,
   headers: REANIME_HEADERS,
 });
 
 let cloudflareBlockedUntil = 0;
-const CLOUDFLARE_COOLDOWN_MS = 5 * 1000;
+const CLOUDFLARE_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes cooldown to prevent repeated 15s delays
 
 export function isReanimeCloudflareBlocked(): boolean {
   return Date.now() < cloudflareBlockedUntil;
@@ -59,7 +59,7 @@ function markReanimeCloudflareBlocked(context = "") {
   cloudflareBlockedUntil = Date.now() + CLOUDFLARE_COOLDOWN_MS;
 }
 
-async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2): Promise<any> {
+async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 1): Promise<any> {
   if (isReanimeCloudflareBlocked()) {
     return null;
   }
@@ -68,53 +68,52 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     ? urlPath
     : `${BASE_URL}${urlPath.startsWith("/") ? "" : "/"}${urlPath}`;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await client.get(urlPath, {
-        ...options,
-        timeout: 8000,
-      });
-      if (res.data) {
-        if (isCloudflareChallengeBody(res.data)) {
-          markReanimeCloudflareBlocked(urlPath);
-          return null;
-        }
-        return res.data;
-      }
-    } catch (err: any) {
-      if (isCloudflareChallengeBody(err?.response?.data)) {
+  try {
+    const res = await client.get(urlPath, {
+      ...options,
+      timeout: 2500,
+    });
+    if (res.data) {
+      if (isCloudflareChallengeBody(res.data)) {
         markReanimeCloudflareBlocked(urlPath);
         return null;
       }
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        const fetchRes = await fetch(fullUrl, {
-          signal: controller.signal,
-          headers: {
-            ...REANIME_HEADERS,
-            ...(options.headers || {}),
-          },
-        });
-        clearTimeout(timeoutId);
-        const text = await fetchRes.text();
-        if (isCloudflareChallengeBody(text)) {
-          markReanimeCloudflareBlocked(urlPath);
-          return null;
-        }
-        if (fetchRes.ok && text) {
-          try {
-            return JSON.parse(text);
-          } catch {
-            return text;
-          }
-        }
-      } catch {}
+      return res.data;
     }
-
-    if (attempt < maxRetries) {
-      await new Promise((r) => setTimeout(r, attempt * 250));
+  } catch (err: any) {
+    const status = err?.response?.status;
+    if (status === 403 || status === 503 || isCloudflareChallengeBody(err?.response?.data)) {
+      markReanimeCloudflareBlocked(urlPath);
+      return null;
     }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const fetchRes = await fetch(fullUrl, {
+        signal: controller.signal,
+        headers: {
+          ...REANIME_HEADERS,
+          ...(options.headers || {}),
+        },
+      });
+      clearTimeout(timeoutId);
+      if (fetchRes.status === 403 || fetchRes.status === 503) {
+        markReanimeCloudflareBlocked(urlPath);
+        return null;
+      }
+      const text = await fetchRes.text();
+      if (isCloudflareChallengeBody(text)) {
+        markReanimeCloudflareBlocked(urlPath);
+        return null;
+      }
+      if (fetchRes.ok && text) {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return text;
+        }
+      }
+    } catch {}
   }
 
   return null;
