@@ -229,6 +229,24 @@ export async function GET(request: NextRequest) {
         } catch {}
       }
 
+      // Fallback to SUB if DUB was requested and unavailable
+      if (audio === "dub" && anilistId) {
+        try {
+          const animexSub = await resolveAnimexPlayStream({
+            anilistId,
+            episode,
+            type: "sub",
+            title: title || undefined,
+          });
+          if (animexSub?.proxyM3u8) {
+            return NextResponse.redirect(new URL(animexSub.proxyM3u8, baseUrl).href, {
+              status: 302,
+              headers: CORS_HEADERS,
+            });
+          }
+        } catch {}
+      }
+
       return NextResponse.json(
         { success: false, error: "Stream unavailable" },
         { status: 404, headers: CORS_HEADERS }
@@ -438,7 +456,41 @@ export async function GET(request: NextRequest) {
       } catch {}
     }
 
-    // 4. Non-blocking source list (use cache or fast 400ms timeout)
+    // 4. Seamless Fallback to SUB if DUB was requested and unavailable
+    if (!streamResult && audio === "dub" && anilistId) {
+      try {
+        const subFallback = await resolveAnimexPlayStream({
+          anilistId,
+          episode,
+          type: "sub",
+          title: title || undefined,
+        });
+        if (subFallback?.proxyM3u8) {
+          const provNorm = (subFallback.provider || "").toLowerCase();
+          const provName =
+            provNorm === "yuki" || provNorm === "yuri"
+              ? "Yuri"
+              : provNorm === "zuna" || provNorm === "zuri"
+              ? "Zuri"
+              : subFallback.provider || "Yuri";
+
+          resolvedServer = provName;
+          streamResult = {
+            server: provName,
+            serverName: `${provName} (Sub - Dub Unavailable)`,
+            provider: subFallback.provider,
+            audio: "sub",
+            audioFallback: true,
+            m3u8: subFallback.proxyM3u8,
+            fullM3u8: `${baseUrl}${subFallback.proxyM3u8}`,
+            subtitles: subFallback.subtitles || [],
+            chapters: subFallback.chapters,
+          };
+        }
+      } catch {}
+    }
+
+    // 5. Non-blocking source list (use cache or fast 400ms timeout)
     let allSources: any[] = [];
     const cachedSources = sourcesCache.get(`${targetIdentifier}_ep${episode}`);
     if (cachedSources && Date.now() - cachedSources.timestamp < SOURCES_CACHE_TTL) {

@@ -1,6 +1,13 @@
 import axios from "axios";
 import { isStreamTokenExpired } from "./token-utils";
 import { resolveFromAniListId } from "./anime-resolver";
+import {
+  getOutboundHttpsAgent,
+  getOutboundHttpAgent,
+  isCloudflareChallenge,
+  resilientFetch,
+  hasOutboundProxy,
+} from "./proxy-agent";
 
 const BASE_URL = "https://reanime.to";
 
@@ -30,31 +37,23 @@ export const FLIXCLOUD_HEADERS: Record<string, string> = {
 
 const client = axios.create({
   baseURL: BASE_URL,
-  timeout: 2500,
+  timeout: 3000,
   headers: REANIME_HEADERS,
+  httpsAgent: getOutboundHttpsAgent(),
+  httpAgent: getOutboundHttpAgent(),
 });
 
 let cloudflareBlockedUntil = 0;
-const CLOUDFLARE_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes cooldown to prevent repeated 15s delays
+const CLOUDFLARE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes cooldown when genuine Cloudflare challenge is encountered
 
 export function isReanimeCloudflareBlocked(): boolean {
+  if (hasOutboundProxy()) return false;
   return Date.now() < cloudflareBlockedUntil;
-}
-
-function isCloudflareChallengeBody(data: any): boolean {
-  if (typeof data !== "string") return false;
-  return (
-    data.includes("Just a moment...") ||
-    data.includes("challenge-platform") ||
-    data.includes("cf-browser-verification") ||
-    data.includes("Checking your browser") ||
-    data.includes("Enable JavaScript and cookies to continue")
-  );
 }
 
 function markReanimeCloudflareBlocked(context = "") {
   if (Date.now() >= cloudflareBlockedUntil) {
-    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}).`);
+    console.warn(`[Reanime] Cloudflare challenge active on ${BASE_URL} (${context || "403"}). Seamlessly falling back to alternative servers.`);
   }
   cloudflareBlockedUntil = Date.now() + CLOUDFLARE_COOLDOWN_MS;
 }
@@ -71,10 +70,16 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 1
   try {
     const res = await client.get(urlPath, {
       ...options,
-      timeout: 2500,
+      timeout: 3000,
     });
     if (res.data) {
-      if (isCloudflareChallengeBody(res.data)) {
+      if (isCloudflareChallenge(res.data)) {
+        if (hasOutboundProxy()) {
+          try {
+            const proxied = await resilientFetch(fullUrl, { headers: REANIME_HEADERS, timeout: 5000 });
+            return JSON.parse(proxied.data);
+          } catch {}
+        }
         markReanimeCloudflareBlocked(urlPath);
         return null;
       }
@@ -82,7 +87,14 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 1
     }
   } catch (err: any) {
     const status = err?.response?.status;
-    if (status === 403 || status === 503 || isCloudflareChallengeBody(err?.response?.data)) {
+    const body = err?.response?.data;
+    if (status === 403 || status === 503 || isCloudflareChallenge(body)) {
+      if (hasOutboundProxy()) {
+        try {
+          const proxied = await resilientFetch(fullUrl, { headers: REANIME_HEADERS, timeout: 5000 });
+          return JSON.parse(proxied.data);
+        } catch {}
+      }
       markReanimeCloudflareBlocked(urlPath);
       return null;
     }
@@ -102,7 +114,7 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 1
         return null;
       }
       const text = await fetchRes.text();
-      if (isCloudflareChallengeBody(text)) {
+      if (isCloudflareChallenge(text)) {
         markReanimeCloudflareBlocked(urlPath);
         return null;
       }
@@ -170,6 +182,8 @@ export async function decryptFlixStream(
     try {
       const res = await axios.get(embedUrl, {
         timeout: 12000,
+        httpsAgent: getOutboundHttpsAgent(),
+        httpAgent: getOutboundHttpAgent(),
         headers: {
           ...FLIXCLOUD_HEADERS,
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -263,6 +277,8 @@ export async function decryptFlixStream(
     try {
       tokenRes = await axios.get(`https://flixcloud.cc/api/m3u8/${token}`, {
         timeout: 10000,
+        httpsAgent: getOutboundHttpsAgent(),
+        httpAgent: getOutboundHttpAgent(),
         headers: {
           ...FLIXCLOUD_HEADERS,
           Accept: "application/json, text/plain, */*",

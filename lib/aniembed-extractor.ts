@@ -73,21 +73,36 @@ export interface AnimexSourceResult {
   headers: Record<string, string> | null;
 }
 
+import {
+  getOutboundHttpsAgent,
+  resilientFetch,
+  hasOutboundProxy,
+  isCloudflareChallenge,
+} from "./proxy-agent";
+
 // Pre-seeded slugs for popular anime to bypass cloud scraping latency/Cloudflare blocks
 const PRESEEDED_SLUGS: Array<[number, string]> = [
   [16498, "attack-on-titan-2jqd0"],
+  [25777, "shingeki-no-kyojin-season-2-20pj0"],
+  [99147, "shingeki-no-kyojin-season-3-20pj1"],
+  [104578, "shingeki-no-kyojin-season-3-part-2-20pj2"],
+  [110277, "shingeki-no-kyojin-the-final-season-20p26"],
+  [131681, "shingeki-no-kyojin-the-final-season-part-2-20p27"],
   [154587, "frieren-beyond-journey-s-end-faato"],
   [21, "one-piece-20j04"],
   [20, "naruto-20p25"],
   [1735, "naruto-shippuuden-20p2k"],
+  [269, "bleach-20p20"],
+  [159322, "bleach-sennen-kessen-hen-ketsubetsu-tan-20v9o"],
   [101922, "kimetsu-no-yaiba-20p61"],
+  [129874, "kimetsu-no-yaiba-yuukaku-hen-20v9l"],
+  [145139, "kimetsu-no-yaiba-katanakaji-no-sato-hen-20v9m"],
   [113415, "jujutsu-kaisen-20j65"],
   [145064, "jujutsu-kaisen-2nd-season-20v9k"],
   [151807, "solo-leveling-20j02"],
+  [176496, "solo-leveling-season-2-arise-from-the-shadow-1w3cm"],
   [11061, "hunter-x-hunter-2011-20p50"],
   [1535, "death-note-20p4k"],
-  [99147, "shingeki-no-kyojin-season-3-20pj1"],
-  [110277, "shingeki-no-kyojin-the-final-season-20p26"],
   [21519, "kimi-no-na-wa-20p4m"],
   [5114, "fullmetal-alchemist-brotherhood-20j0v"],
   [117710, "cyberpunk-edgerunners-20j00"],
@@ -102,8 +117,14 @@ const PRESEEDED_SLUGS: Array<[number, string]> = [
   [166240, "dandadan-20j0g"],
   [20605, "tokyo-ghoul-2zpd0"],
   [20954, "koe-no-katachi-20p7k"],
-  [98444, "boku-no-hero-academia-2nd-season-20p45"],
   [21459, "boku-no-hero-academia-20p48"],
+  [98444, "boku-no-hero-academia-2nd-season-20p45"],
+  [100166, "boku-no-hero-academia-3rd-season-20p46"],
+  [104276, "boku-no-hero-academia-4th-season-20p47"],
+  [101348, "vinland-saga-20j08"],
+  [97940, "black-clover-20j03"],
+  [21202, "kono-subarashii-sekai-ni-shukufuku-wo-20j05"],
+  [21355, "re-zero-kara-hajimeru-isekai-seikatsu-20j06"],
 ];
 
 // In-memory cache for embed info to avoid hitting aniembed.se repeatedly
@@ -206,12 +227,26 @@ export async function getEmbedInfo(
   // 1. Try SvelteKit __data.json endpoint first (clean, fast JSON, no HTML/regex overhead)
   try {
     const dataUrl = `${ANIEMBED_BASE}/e/${anilistId}/${episode}/__data.json`;
-    const res = await fetch(dataUrl, {
-      headers: ANIMEX_HEADERS,
-      signal: AbortSignal.timeout(7000),
-    });
-    if (res.ok) {
-      const j = await res.json();
+    let j: any = null;
+
+    if (hasOutboundProxy()) {
+      try {
+        const proxied = await resilientFetch(dataUrl, { headers: ANIMEX_HEADERS, timeout: 4000 });
+        j = JSON.parse(proxied.data);
+      } catch {}
+    }
+
+    if (!j) {
+      const res = await fetch(dataUrl, {
+        headers: ANIMEX_HEADERS,
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        j = await res.json();
+      }
+    }
+
+    if (j) {
       const nodes = j?.nodes?.[1]?.data;
       if (Array.isArray(nodes) && nodes.length > 0 && nodes[0]?.id !== undefined) {
         const root = nodes[0];
@@ -257,7 +292,7 @@ export async function getEmbedInfo(
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "none",
       },
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(3000),
     });
     if (res.ok) {
       html = await res.text();
