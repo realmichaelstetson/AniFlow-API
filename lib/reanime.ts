@@ -51,60 +51,58 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
     : `${BASE_URL}${urlPath.startsWith("/") ? "" : "/"}${urlPath}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // 1. Try with axios
+    // 1. Try native fetch first with clean headers (avoids OpenSSL TLS/Chrome UA mismatch that triggers Cloudflare)
     try {
-      const res = await client.get(urlPath, {
-        ...options,
-        timeout: 8000,
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7000);
+      const fetchRes = await fetch(fullUrl, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Accept-Language": "en-US,en;q=0.9",
+          Referer: `${BASE_URL}/`,
+          ...(options.headers || {}),
+        },
       });
-      if (res.data) {
-        if (isCloudflareChallengeBody(res.data)) {
-          markReanimeCloudflareBlocked(urlPath);
-          return null;
-        }
-        return res.data;
-      }
-    } catch (err: any) {
-      if (isCloudflareChallengeBody(err?.response?.data)) {
-        markReanimeCloudflareBlocked(urlPath);
-        return null;
-      }
-      // 2. Fallback to native fetch
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        const fetchRes = await fetch(fullUrl, {
-          signal: controller.signal,
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            Accept: "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            Referer: BASE_URL,
-            ...(options.headers || {}),
-          },
-        });
-        clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
+      if (fetchRes.ok) {
         const text = await fetchRes.text();
-        if (isCloudflareChallengeBody(text)) {
-          markReanimeCloudflareBlocked(urlPath);
-          return null;
-        }
-        if (fetchRes.ok && text) {
+        if (!isCloudflareChallengeBody(text)) {
           try {
             return JSON.parse(text);
           } catch {
             return text;
           }
         }
-      } catch {}
+      }
+    } catch {}
+
+    // 2. Try with axios
+    try {
+      const res = await client.get(urlPath, {
+        ...options,
+        timeout: 8000,
+      });
+      if (res.data) {
+        if (!isCloudflareChallengeBody(res.data)) {
+          return res.data;
+        }
+      }
+    } catch (err: any) {
+      if (isCloudflareChallengeBody(err?.response?.data)) {
+        if (attempt === maxRetries) {
+          markReanimeCloudflareBlocked(urlPath);
+          return null;
+        }
+      }
     }
 
     if (attempt < maxRetries) {
-      await new Promise((r) => setTimeout(r, attempt * 250));
+      await new Promise((r) => setTimeout(r, attempt * 200));
     }
   }
 
+  markReanimeCloudflareBlocked(urlPath);
   return null;
 }
 
@@ -526,6 +524,7 @@ export interface ReanimeEpisodeServers {
 }
 
 export interface ReanimeEpisodeSourceItem {
+  id?: string;
   type: "SUB" | "DUB";
   language: string;
   videoUrl: string;
@@ -691,7 +690,9 @@ export async function getReanimeEpisodeSources(
             };
           });
 
+          const srvNum = (s.server || "").includes("2") ? "2" : "1";
           sources.push({
+            id: `flow-${srvNum}-${isDub ? "dub" : "sub"}`,
             type: isDub ? "DUB" : "SUB",
             language: isDub ? "English Dub" : "Japanese",
             videoUrl: proxyUrl,

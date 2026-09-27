@@ -343,10 +343,18 @@ export async function GET(request: NextRequest) {
               const dubUrl = isDubSrv
                 ? `${baseUrl}/api/proxy/m3u8?url=${encodeURIComponent(s.hls || "")}&pk=${encodeURIComponent(s.pk || "")}&audio=dub${sAidParam}${sVParam}${qParam}${epParam}&server=${encodeURIComponent(s.server)}`
                 : null;
+              const srvNum = (s.server || "").includes("2") ? "2" : "1";
               return {
+                id: `flow-${srvNum}-${s.audio}`,
                 server: s.server,
+                name: s.server,
+                serverName: `${s.server} (${s.audio === "dub" ? "English Dub" : "Sub"})`,
+                type: s.audio === "dub" ? "DUB" : "SUB",
                 audio: s.audio,
+                videoUrl: isDubSrv ? dubUrl : subUrl,
                 m3u8: isDubSrv ? dubUrl : subUrl,
+                quality: "1080p",
+                isHls: true,
                 subtitles: s.subtitles || [],
               };
             });
@@ -497,8 +505,24 @@ export async function GET(request: NextRequest) {
     } else {
       allSources = await Promise.race([
         getAllSourcesCached(targetIdentifier, anilistId, episode),
-        new Promise<any[]>((res) => setTimeout(() => res([]), 400)),
+        new Promise<any[]>((res) => setTimeout(() => res([]), 500)),
       ]);
+    }
+
+    // 6. Last-resort fallback: If streamResult is still null, take any available source from allSources
+    if (!streamResult && allSources.length > 0) {
+      const matchAudio = allSources.find((s: any) => s.type === (audio === "dub" ? "DUB" : "SUB")) || allSources[0];
+      if (matchAudio?.videoUrl) {
+        resolvedServer = matchAudio.serverName || "Auto";
+        streamResult = {
+          server: resolvedServer,
+          serverName: matchAudio.serverName || resolvedServer,
+          audio: matchAudio.type?.toLowerCase() || audio,
+          m3u8: matchAudio.videoUrl,
+          fullM3u8: matchAudio.videoUrl.startsWith("http") ? matchAudio.videoUrl : `${baseUrl}${matchAudio.videoUrl}`,
+          subtitles: matchAudio.subtitles || [],
+        };
+      }
     }
 
     if (!streamResult) {
