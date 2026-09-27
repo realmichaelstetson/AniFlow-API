@@ -24,6 +24,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ArrowDown,
+  HelpCircle,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -98,6 +100,84 @@ const SERVER_OPTIONS = [
   },
 ];
 
+const ARCHITECTURE_FEATURES = [
+  {
+    icon: Server,
+    title: "Multi-Server Routing",
+    desc: "Automated failover between Flow 1, Flow 2, Yuri, and Zuri stream engines for uninterrupted playback.",
+    key: "failover.engine",
+    value: "4 active mirrors",
+    valueColor: "text-emerald-400",
+  },
+  {
+    icon: Layers,
+    title: "AniList & MAL Mapping",
+    desc: "Target media using AniList GraphQL IDs or MyAnimeList IDs with automated cross-database resolution.",
+    key: "mapping.route",
+    value: "/embed/ani ⇄ /embed/mal",
+    valueColor: "text-zinc-400",
+  },
+  {
+    icon: Zap,
+    title: "AniSkip Auto-Skip",
+    desc: "Queries opening and ending timestamps in real-time with visual timeline markers and optional auto-skip.",
+    key: "aniskip.timestamps",
+    value: "OP & ED sync",
+    valueColor: "text-amber-400/90",
+  },
+  {
+    icon: Radio,
+    title: "Sub / Dub Dual Audio",
+    desc: "Switch between original Japanese audio with stylized subtitles and English dubs with zero buffer.",
+    key: "audio.track",
+    value: "instant toggle",
+    valueColor: "text-zinc-400",
+  },
+  {
+    icon: Sliders,
+    title: "shad-renew Player",
+    desc: "Liquid-glass dark minimalist UI with custom subtitle typography, 200% Web Audio booster, and speed rates.",
+    key: "player.ui",
+    value: "HLS.js adaptive",
+    valueColor: "text-zinc-400",
+  },
+  {
+    icon: Terminal,
+    title: "postMessage Telemetry",
+    desc: "Stream live playback events (time, play, pause, complete) to your parent site and send remote control commands.",
+    key: "event.bridge",
+    value: "two-way JSON sync",
+    valueColor: "text-sky-400",
+  },
+];
+
+const FAQS = [
+  {
+    q: "How do I embed the AniFlow video player into my website?",
+    a: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element into your page or React component. Simply specify the database source ('ani' for AniList or 'mal' for MyAnimeList), the anime ID, episode number, and audio format ('sub' or 'dub'). For example: <iframe src=\"https://aniflow.org/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" className=\"w-full aspect-video border-0 rounded-xl\" />.",
+  },
+  {
+    q: "Does AniFlow API support both AniList and MyAnimeList (MAL) IDs?",
+    a: "Yes! AniFlow natively supports both AniList IDs (/embed/ani/:id/:ep/:audio) and MyAnimeList IDs (/embed/mal/:id/:ep/:audio). The backend automatically translates IDs, queries episode lists, matches romanized and English titles, and resolves streaming links without any manual configuration on your side.",
+  },
+  {
+    q: "How does the multi-server stream route engine work?",
+    a: "AniFlow integrates 4 independent streaming providers: Flow 1 (our high-speed primary engine), Flow 2 (resilient backup mirror), Yuri (specialized anime stream extractor), and Zuri (dedicated subbed catalog). Users can manually switch servers inside the player, or the API will automatically failover if an upstream source is down.",
+  },
+  {
+    q: "How does automatic intro and outro skipping work with AniSkip?",
+    a: "AniFlow queries the AniSkip database in real time to fetch exact millisecond timestamps for opening (OP) and ending (ED) sequences. The player visually highlights these segments in orange on the timeline scrubber and provides an 'Auto-Skip' toggle button to jump directly past the intro seamlessly.",
+  },
+  {
+    q: "Can I synchronize watch time and receive playback events in my app?",
+    a: "Yes. AniFlow features a bidirectional HTML5 postMessage bridge. The embedded player streams telemetry events (such as 'aniflow:time' with current playback seconds, 'aniflow:play', 'aniflow:pause', and 'aniflow:complete') to your parent website. You can also send commands to pause, play, or seek remotely.",
+  },
+  {
+    q: "Is AniFlow API open-source and ready for production deployment?",
+    a: "Yes, AniFlow is fully open-source under the MIT license, built with Next.js 14, TypeScript, Tailwind CSS, and HLS.js. It comes pre-configured with edge proxying, CORS headers, Dockerfile support, and production-ready metadata for immediate global deployment.",
+  },
+];
+
 export default function HomePage() {
   // Playground state matching screenshot defaults
   const [embedType, setEmbedType] = useState<"ani" | "mal">("ani");
@@ -109,6 +189,9 @@ export default function HomePage() {
   const [autoskipIntro, setAutoskipIntro] = useState<boolean>(true);
   const [autoskipOutro, setAutoskipOutro] = useState<boolean>(true);
   const [copiedType, setCopiedType] = useState<string | null>(null);
+
+  // FAQ accordion state
+  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
 
   // Custom dropdown open state
   const [openDropdown, setOpenDropdown] = useState<"database" | "audio" | "server" | null>(null);
@@ -321,10 +404,24 @@ export default function HomePage() {
             <nav className="hidden md:flex items-center gap-1 text-xs text-zinc-400 font-medium">
               <button
                 type="button"
+                onClick={() => scrollToSection("features")}
+                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
+              >
+                Features
+              </button>
+              <button
+                type="button"
                 onClick={() => scrollToSection("docs")}
                 className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
               >
                 Documentation
+              </button>
+              <button
+                type="button"
+                onClick={() => scrollToSection("faq")}
+                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
+              >
+                FAQ
               </button>
               <button
                 type="button"
@@ -732,6 +829,87 @@ export default function HomePage() {
                   allow="autoplay; fullscreen; picture-in-picture"
                 />
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ARCHITECTURE & FEATURES SECTION */}
+      <section
+        id="features"
+        className="py-16 sm:py-20 border-t border-white/[0.06] relative scroll-mt-20"
+      >
+        <div className="max-w-5xl mx-auto px-4 sm:px-6">
+          <div className="text-center max-w-2xl mx-auto mb-10">
+            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
+              Architecture & Features
+            </h2>
+            <p className="text-xs sm:text-sm text-zinc-400">
+              Low-latency edge delivery, automated stream failover, and full host control.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-white/[0.08] bg-[#030303] overflow-hidden shadow-2xl">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/[0.06]">
+              {ARCHITECTURE_FEATURES.slice(0, 3).map((feat, idx) => {
+                const Icon = feat.icon;
+                return (
+                  <div
+                    key={idx}
+                    className="p-5 sm:p-6 flex flex-col justify-between hover:bg-white/[0.02] transition-colors group"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-[#0C0C0C] border border-white/[0.08] flex items-center justify-center text-zinc-400 group-hover:text-white group-hover:border-white/20 transition-colors">
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
+                        <h3 className="text-sm font-bold text-white tracking-tight group-hover:text-zinc-200 transition-colors">
+                          {feat.title}
+                        </h3>
+                      </div>
+                      <p className="text-xs text-zinc-400 leading-relaxed font-product-sans">
+                        {feat.desc}
+                      </p>
+                    </div>
+
+                    <div className="mt-5 pt-3 border-t border-white/[0.04] flex items-center justify-between text-[11px] font-mono">
+                      <span className="text-zinc-500">{feat.key}</span>
+                      <span className={feat.valueColor}>{feat.value}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/[0.06] border-t border-white/[0.06]">
+              {ARCHITECTURE_FEATURES.slice(3, 6).map((feat, idx) => {
+                const Icon = feat.icon;
+                return (
+                  <div
+                    key={idx}
+                    className="p-5 sm:p-6 flex flex-col justify-between hover:bg-white/[0.02] transition-colors group"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-[#0C0C0C] border border-white/[0.08] flex items-center justify-center text-zinc-400 group-hover:text-white group-hover:border-white/20 transition-colors">
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
+                        <h3 className="text-sm font-bold text-white tracking-tight group-hover:text-zinc-200 transition-colors">
+                          {feat.title}
+                        </h3>
+                      </div>
+                      <p className="text-xs text-zinc-400 leading-relaxed font-product-sans">
+                        {feat.desc}
+                      </p>
+                    </div>
+
+                    <div className="mt-5 pt-3 border-t border-white/[0.04] flex items-center justify-between text-[11px] font-mono">
+                      <span className="text-zinc-500">{feat.key}</span>
+                      <span className={feat.valueColor}>{feat.value}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1365,10 +1543,73 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* FAQ SECTION */}
+      <section
+        id="faq"
+        className="py-16 sm:py-24 border-t border-white/[0.06] relative scroll-mt-20"
+      >
+        <div className="max-w-4xl mx-auto px-4 sm:px-6">
+          <div className="text-center max-w-2xl mx-auto mb-10">
+            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
+              Frequently Asked Questions
+            </h2>
+            <p className="text-xs sm:text-sm text-zinc-400">
+              Clear answers regarding embed URLs, databases, postMessage telemetry, and self-hosting.
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {FAQS.map((faq, index) => {
+              const isOpen = openFaqIndex === index;
+              return (
+                <div
+                  key={index}
+                  className="rounded-xl bg-[#080808] border border-white/[0.08] hover:border-white/[0.16] transition-colors overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setOpenFaqIndex(isOpen ? null : index)}
+                    className="w-full px-5 py-4 text-left flex items-center justify-between gap-4 cursor-pointer focus:outline-none"
+                  >
+                    <span className="text-sm sm:text-base font-bold text-white tracking-tight">
+                      {faq.q}
+                    </span>
+                    <div
+                      className={cn(
+                        "w-6 h-6 rounded-full bg-white/[0.06] border border-white/[0.1] flex items-center justify-center shrink-0 transition-transform duration-200",
+                        isOpen && "rotate-180 bg-white/20"
+                      )}
+                    >
+                      <ChevronDown className="w-3.5 h-3.5 text-zinc-300" />
+                    </div>
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {isOpen && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2, ease: "easeInOut" }}
+                        className="overflow-hidden"
+                      >
+                        <div className="px-5 pb-5 pt-1 text-xs sm:text-sm text-zinc-400 leading-relaxed border-t border-white/[0.04]">
+                          {faq.a}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
       {/* SYSTEM STATUS SECTION */}
       <section
         id="status"
-        className="py-16 sm:py-20 scroll-mt-20"
+        className="py-16 sm:py-20 scroll-mt-20 border-t border-white/[0.06]"
       >
         <div className="max-w-5xl mx-auto px-4 sm:px-6 space-y-6">
           {/* Heading */}
@@ -1451,10 +1692,63 @@ export default function HomePage() {
       </section>
 
       {/* Footer */}
-      <footer className="py-10 px-4 sm:px-6 text-center text-xs text-zinc-500 bg-transparent backdrop-blur-sm space-y-3">
-        <p>© 2026 AniFlow API. All rights reserved.</p>
-        <p className="max-w-2xl mx-auto text-[11px] text-zinc-600 leading-relaxed">
-          DMCA Disclaimer: AniFlow API aggregates publicly available stream sources for embedding. We do not host video files. Copyright claims should be directed to the upstream providers.
+      <footer className="py-12 px-4 sm:px-6 border-t border-white/[0.06] bg-[#030303] backdrop-blur-sm text-center space-y-6">
+        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="AniFlow API Logo" className="w-6 h-6 object-contain" />
+            <span className="font-extrabold text-sm tracking-tight text-white">AniFlow API</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.08] text-zinc-400 border border-white/[0.1]">
+              v1.0
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-zinc-400">
+            <button
+              type="button"
+              onClick={() => scrollToSection("features")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Features
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToSection("docs")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Documentation
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToSection("faq")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              FAQ
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToSection("status")}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              System Status
+            </button>
+            <a
+              href="https://github.com/realmichaelstetson/AniFlow-API"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-white transition-colors flex items-center gap-1"
+            >
+              <span>GitHub</span>
+              <ExternalLink className="w-3 h-3 text-zinc-500" />
+            </a>
+          </div>
+
+          <p className="text-xs text-zinc-500">
+            © 2026 AniFlow API • MIT License
+          </p>
+        </div>
+
+        <p className="max-w-3xl mx-auto text-[11px] text-zinc-600 leading-relaxed">
+          DMCA & Legal Disclaimer: AniFlow API is an open-source stream aggregator and player framework. We do not host, store, or upload media files. All streams are resolved dynamically from publicly available third-party endpoints. Copyright inquiries should be directed to the respective upstream media hosts.
         </p>
       </footer>
     </div>

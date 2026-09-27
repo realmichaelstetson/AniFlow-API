@@ -5,7 +5,7 @@
 <h1 align="center">AniFlow API</h1>
 
 <p align="center">
-  <strong>Stream Anime on Any Website — High-Performance Embedding Engine & Video Player</strong>
+  <strong>Stream Anime on Any Website — High-Performance Anime Streaming & Embed API</strong>
 </p>
 
 <p align="center">
