@@ -107,8 +107,7 @@ export async function GET(request: NextRequest) {
       format === "m3u8" ||
       searchParams.get("m3u8") === "true" ||
       request.headers.get("accept")?.includes("application/vnd.apple.mpegurl") ||
-      request.headers.get("accept")?.includes("audio/x-mpegurl") ||
-      request.nextUrl.pathname.endsWith(".m3u8");
+      (request.nextUrl?.pathname || new URL(request.url).pathname).endsWith(".m3u8");
 
     const host = request.headers.get("host") || "localhost:3000";
     const protocol = request.headers.get("x-forwarded-proto") || "http";

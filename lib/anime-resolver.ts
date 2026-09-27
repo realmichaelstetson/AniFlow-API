@@ -160,3 +160,34 @@ export async function resolveFromMalId(malId: number): Promise<AnimeMapping | nu
 
   return null;
 }
+
+/**
+ * Resolve anime AniList and MAL IDs by title or fallback IDs
+ */
+export async function resolveAnimeIds(
+  title: string,
+  fallbackAnilistId?: number | null,
+  fallbackMalId?: number | null
+): Promise<{ anilistId?: number; malId?: number }> {
+  if (fallbackAnilistId && fallbackAnilistId > 0) {
+    return { anilistId: fallbackAnilistId, malId: fallbackMalId || undefined };
+  }
+  if (!title) {
+    return { anilistId: fallbackAnilistId || undefined, malId: fallbackMalId || undefined };
+  }
+  try {
+    const res = await axios.post(
+      "https://graphql.anilist.co",
+      {
+        query: `query ($search: String) { Page(page: 1, perPage: 1) { media(search: $search, type: ANIME) { id idMal } } }`,
+        variables: { search: title.replace(/\([^)]*\)/g, "").trim() },
+      },
+      { timeout: 4000 }
+    );
+    const media = res.data?.data?.Page?.media?.[0];
+    if (media?.id) {
+      return { anilistId: media.id, malId: media.idMal || fallbackMalId || undefined };
+    }
+  } catch {}
+  return { anilistId: fallbackAnilistId || undefined, malId: fallbackMalId || undefined };
+}
