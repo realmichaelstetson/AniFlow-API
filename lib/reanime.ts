@@ -201,23 +201,44 @@ export async function decryptFlixStream(
   const embedUrl = `https://flixcloud.cc/e/${cleanAccessId}?v=${version}`;
   let html = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
+    // 1. Try with got-scraping first (bypasses Cloudflare on flixcloud.cc)
+    try {
+      const got = await getGotScraping();
+      if (got) {
+        const res = await got.get(embedUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Referer: BASE_URL,
+          },
+          timeout: { request: 6000 },
+        });
+        if (res.body && typeof res.body === "string" && res.body.includes("data:")) {
+          html = res.body;
+          break;
+        }
+      }
+    } catch {}
+
+    // 2. Fallback to axios
     try {
       const res = await axios.get(embedUrl, {
-        timeout: 12000,
+        timeout: 6000,
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
           Referer: BASE_URL,
         },
       });
-      if (res.data && typeof res.data === "string") {
+      if (res.data && typeof res.data === "string" && res.data.includes("data:")) {
         html = res.data;
         break;
       }
     } catch {
+      // 3. Fallback to fetch
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000);
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
         const fRes = await fetch(embedUrl, {
           signal: controller.signal,
           headers: {
@@ -228,12 +249,15 @@ export async function decryptFlixStream(
         });
         clearTimeout(timeoutId);
         if (fRes.ok) {
-          html = await fRes.text();
-          if (html) break;
+          const text = await fRes.text();
+          if (text && text.includes("data:")) {
+            html = text;
+            break;
+          }
         }
       } catch {}
     }
-    if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 300));
+    if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 200));
   }
 
   if (!html) {
@@ -289,19 +313,39 @@ export async function decryptFlixStream(
   // Request playback token (with retry if network drops or flixcloud rate limits)
   let tokenRes: any = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
+    // 1. Try with got-scraping first
+    try {
+      const got = await getGotScraping();
+      if (got) {
+        const res = await got.get(`https://flixcloud.cc/api/m3u8/${token}`, {
+          timeout: { request: 6000 },
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            Referer: embedUrl,
+          },
+        });
+        if (res.body) {
+          tokenRes = { data: JSON.parse(res.body) };
+          break;
+        }
+      }
+    } catch {}
+
+    // 2. Fallback to axios
     try {
       tokenRes = await axios.get(`https://flixcloud.cc/api/m3u8/${token}`, {
-        timeout: 10000,
+        timeout: 6000,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
           Referer: embedUrl,
         },
       });
-      if (tokenRes.data) break;
+      if (tokenRes?.data) break;
     } catch (err) {
+      // 3. Fallback to fetch
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
         const fRes = await fetch(`https://flixcloud.cc/api/m3u8/${token}`, {
           signal: controller.signal,
           headers: {
@@ -316,7 +360,7 @@ export async function decryptFlixStream(
         }
       } catch {}
       if (attempt === 3 && !tokenRes?.data) throw err;
-      await new Promise((r) => setTimeout(r, attempt * 350));
+      await new Promise((r) => setTimeout(r, attempt * 200));
     }
   }
 
