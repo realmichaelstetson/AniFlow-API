@@ -388,10 +388,18 @@ export async function GET(request: NextRequest) {
         });
 
         if (animex?.proxyM3u8) {
-          resolvedServer = animex.provider || "zuri";
+          const provNorm = (animex.provider || "").toLowerCase();
+          const provName =
+            provNorm === "yuki" || provNorm === "yuri"
+              ? "Yuri"
+              : provNorm === "zuna" || provNorm === "zuri"
+              ? "Zuri"
+              : animex.provider || "Yuri";
+
+          resolvedServer = provName;
           streamResult = {
-            server: "Zuri",
-            serverName: `${animex.provider.toUpperCase()} (${audio === "dub" ? "English Dub" : "Sub"})`,
+            server: provName,
+            serverName: `${provName} (${audio === "dub" ? "English Dub" : "Sub"})`,
             provider: animex.provider,
             audio,
             m3u8: animex.proxyM3u8,
@@ -400,7 +408,9 @@ export async function GET(request: NextRequest) {
             chapters: animex.chapters,
           };
         }
-      } catch {}
+      } catch (err: any) {
+        console.warn("[/api/play] Fallback to Animex notice:", err?.message || err);
+      }
     }
 
     // Auto-retry the same number as MAL ID if AniList lookup failed

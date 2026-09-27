@@ -73,10 +73,58 @@ export interface AnimexSourceResult {
   headers: Record<string, string> | null;
 }
 
+// Pre-seeded slugs for popular anime to bypass cloud scraping latency/Cloudflare blocks
+const PRESEEDED_SLUGS: Array<[number, string]> = [
+  [16498, "attack-on-titan-2jqd0"],
+  [154587, "frieren-beyond-journey-s-end-faato"],
+  [21, "one-piece-20j04"],
+  [20, "naruto-20p25"],
+  [1735, "naruto-shippuuden-20p2k"],
+  [101922, "kimetsu-no-yaiba-20p61"],
+  [113415, "jujutsu-kaisen-20j65"],
+  [145064, "jujutsu-kaisen-2nd-season-20v9k"],
+  [151807, "solo-leveling-20j02"],
+  [11061, "hunter-x-hunter-2011-20p50"],
+  [1535, "death-note-20p4k"],
+  [99147, "shingeki-no-kyojin-season-3-20pj1"],
+  [110277, "shingeki-no-kyojin-the-final-season-20p26"],
+  [21519, "kimi-no-na-wa-20p4m"],
+  [5114, "fullmetal-alchemist-brotherhood-20j0v"],
+  [117710, "cyberpunk-edgerunners-20j00"],
+  [127230, "chainsaw-man-20j0k"],
+  [140960, "spy-x-family-20j0e"],
+  [10087, "fate-zero-20j07"],
+  [9253, "steins-gate-20p4p"],
+  [131573, "bocchi-the-rock-20j09"],
+  [164212, "oshi-no-ko-20j08"],
+  [142838, "mashle-20j0d"],
+  [163134, "kaiju-no-8-20j0f"],
+  [166240, "dandadan-20j0g"],
+  [20605, "tokyo-ghoul-2zpd0"],
+  [20954, "koe-no-katachi-20p7k"],
+  [98444, "boku-no-hero-academia-2nd-season-20p45"],
+  [21459, "boku-no-hero-academia-20p48"],
+];
+
 // In-memory cache for embed info to avoid hitting aniembed.se repeatedly
 const embedInfoCache = new Map<string, { data: AnimexEmbedInfo; timestamp: number }>();
-const animeSlugCache = new Map<number, string>();
+const animeSlugCache = new Map<number, string>(PRESEEDED_SLUGS);
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+const ANIMEX_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://aniembed.se/",
+  Origin: "https://aniembed.se",
+  "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-origin",
+};
 
 /**
  * Call pp.animex.one API to get available servers (providers) for an anime episode.
@@ -88,12 +136,10 @@ export async function getServers(slug: string, episode: number): Promise<{
   const url = `${API_BASE}/rest/api/servers?id=${encodeURIComponent(slug)}&epNum=${episode}`;
   const res = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-      "Accept": "application/json",
-      "Referer": "https://aniembed.se/",
-      "Origin": "https://aniembed.se",
+      ...ANIMEX_HEADERS,
+      "Sec-Fetch-Site": "cross-site",
     },
-    signal: AbortSignal.timeout(4000),
+    signal: AbortSignal.timeout(6000),
   });
 
   if (!res.ok) {
@@ -161,11 +207,8 @@ export async function getEmbedInfo(
   try {
     const dataUrl = `${ANIEMBED_BASE}/e/${anilistId}/${episode}/__data.json`;
     const res = await fetch(dataUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-      },
-      signal: AbortSignal.timeout(4500),
+      headers: ANIMEX_HEADERS,
+      signal: AbortSignal.timeout(7000),
     });
     if (res.ok) {
       const j = await res.json();
@@ -208,10 +251,13 @@ export async function getEmbedInfo(
     const url = `${ANIEMBED_BASE}/e/${anilistId}/${episode}`;
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ...ANIMEX_HEADERS,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
       },
-      signal: AbortSignal.timeout(4500),
+      signal: AbortSignal.timeout(7000),
     });
     if (res.ok) {
       html = await res.text();
@@ -286,10 +332,8 @@ export async function getSource(
 
   const res = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-      "Accept": "application/json",
-      "Referer": "https://aniembed.se/",
-      "Origin": "https://aniembed.se",
+      ...ANIMEX_HEADERS,
+      "Sec-Fetch-Site": "cross-site",
     },
     signal: AbortSignal.timeout(15000),
   });

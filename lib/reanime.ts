@@ -4,16 +4,34 @@ import { resolveFromAniListId } from "./anime-resolver";
 
 const BASE_URL = "https://reanime.to";
 
+export const REANIME_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Referer: "https://reanime.to/",
+  Origin: "https://reanime.to",
+  "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-origin",
+};
+
+export const FLIXCLOUD_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+};
+
 const client = axios.create({
   baseURL: BASE_URL,
   timeout: 15000,
-  headers: {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    Accept: "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: BASE_URL,
-  },
+  headers: REANIME_HEADERS,
 });
 
 let cloudflareBlockedUntil = 0;
@@ -74,11 +92,7 @@ async function fetchWithRetry(urlPath: string, options: any = {}, maxRetries = 2
         const fetchRes = await fetch(fullUrl, {
           signal: controller.signal,
           headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            Accept: "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            Referer: BASE_URL,
+            ...REANIME_HEADERS,
             ...(options.headers || {}),
           },
         });
@@ -158,9 +172,12 @@ export async function decryptFlixStream(
       const res = await axios.get(embedUrl, {
         timeout: 12000,
         headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+          ...FLIXCLOUD_HEADERS,
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           Referer: BASE_URL,
+          "Sec-Fetch-Dest": "iframe",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "cross-site",
         },
       });
       if (res.data && typeof res.data === "string") {
@@ -174,9 +191,12 @@ export async function decryptFlixStream(
         const fRes = await fetch(embedUrl, {
           signal: controller.signal,
           headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            ...FLIXCLOUD_HEADERS,
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             Referer: BASE_URL,
+            "Sec-Fetch-Dest": "iframe",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
           },
         });
         clearTimeout(timeoutId);
@@ -245,8 +265,12 @@ export async function decryptFlixStream(
       tokenRes = await axios.get(`https://flixcloud.cc/api/m3u8/${token}`, {
         timeout: 10000,
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          ...FLIXCLOUD_HEADERS,
+          Accept: "application/json, text/plain, */*",
           Referer: embedUrl,
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
         },
       });
       if (tokenRes.data) break;
@@ -257,8 +281,12 @@ export async function decryptFlixStream(
         const fRes = await fetch(`https://flixcloud.cc/api/m3u8/${token}`, {
           signal: controller.signal,
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            ...FLIXCLOUD_HEADERS,
+            Accept: "application/json, text/plain, */*",
             Referer: embedUrl,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
           },
         });
         clearTimeout(timeoutId);

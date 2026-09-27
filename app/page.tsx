@@ -154,7 +154,7 @@ const ARCHITECTURE_FEATURES = [
 const FAQS = [
   {
     q: "How do I embed the AniFlow video player into my website?",
-    a: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element into your page or React component. Simply specify the database source ('ani' for AniList or 'mal' for MyAnimeList), the anime ID, episode number, and audio format ('sub' or 'dub'). For example: <iframe src=\"https://aniflow.org/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" className=\"w-full aspect-video border-0 rounded-xl\" />.",
+    a: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element into your page or React component. Simply specify the database source ('ani' for AniList or 'mal' for MyAnimeList), the anime ID, episode number, and audio format ('sub' or 'dub'). For example: <iframe src=\"https://api.aniflow.cc/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" className=\"w-full aspect-video border-0 rounded-xl\" />.",
   },
   {
     q: "Does AniFlow API support both AniList and MyAnimeList (MAL) IDs?",
@@ -216,16 +216,18 @@ export default function HomePage() {
   // System status state
   const [isRefreshingStatus, setIsRefreshingStatus] = useState<boolean>(false);
   const [statusLastCheckTime, setStatusLastCheckTime] = useState<string>("");
+  const [isMounted, setIsMounted] = useState<boolean>(false);
 
   // Live PostMessage Event Logger
   const [eventLogs, setEventLogs] = useState<Array<{ time: string; type: string; payload: any }>>([]);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  // Dynamic host origin detection for frontend (always reflects current site URL)
-  const [origin, setOrigin] = useState<string>("");
-  const [domain, setDomain] = useState<string>("");
+  // Dynamic host origin detection for frontend (defaults to production URL for seamless SSR hydration)
+  const [origin, setOrigin] = useState<string>("https://api.aniflow.cc");
+  const [domain, setDomain] = useState<string>("api.aniflow.cc");
 
   useEffect(() => {
+    setIsMounted(true);
     if (typeof window !== "undefined") {
       setOrigin(window.location.origin);
       setDomain(window.location.host);
@@ -233,8 +235,8 @@ export default function HomePage() {
     }
   }, []);
 
-  const currentOrigin = origin || (typeof window !== "undefined" ? window.location.origin : "");
-  const currentDomain = domain || (typeof window !== "undefined" ? window.location.host : (origin ? origin.replace(/^https?:\/\//, "") : ""));
+  const currentOrigin = origin;
+  const currentDomain = domain;
 
   const handleRefreshStatus = () => {
     setIsRefreshingStatus(true);
@@ -924,7 +926,7 @@ export default function HomePage() {
           {/* Top Domain Callout */}
           <div className="text-center mb-3">
             <span className="text-xs sm:text-sm font-semibold text-rose-400/90 tracking-wide font-mono">
-              Use this domain for embed URLs: <strong className="text-rose-300 font-bold">{currentDomain || (typeof window !== "undefined" ? window.location.host : "localhost:3000")}</strong>
+              Use this domain for embed URLs: <strong className="text-rose-300 font-bold">{currentDomain}</strong>
             </span>
           </div>
 
@@ -1679,8 +1681,8 @@ export default function HomePage() {
                       <td className="py-3.5 px-5 text-zinc-400 whitespace-nowrap">
                         {row.role}
                       </td>
-                      <td className="py-3.5 px-5 text-zinc-400 text-right font-mono whitespace-nowrap">
-                        {statusLastCheckTime || "10:20:24 PM"}
+                      <td className="py-3.5 px-5 text-zinc-400 text-right font-mono whitespace-nowrap" suppressHydrationWarning>
+                        {isMounted && statusLastCheckTime ? statusLastCheckTime : "10:20:24 PM"}
                       </td>
                     </tr>
                   ))}

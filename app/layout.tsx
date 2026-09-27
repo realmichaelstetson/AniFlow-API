@@ -3,7 +3,7 @@ import "./globals.css";
 
 const siteUrl =
   process.env.NEXT_PUBLIC_APP_URL ||
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://aniflow.org");
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://api.aniflow.cc");
 
 export const viewport: Viewport = {
   themeColor: "#000000",
@@ -178,7 +178,7 @@ const jsonLd = {
           name: "How do I embed the AniFlow video player into my website?",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element. For example: <iframe src=\"https://aniflow.org/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" />.",
+            text: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element. For example: <iframe src=\"https://api.aniflow.cc/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" />.",
           },
         },
         {
