@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import http from "http";
 import https from "https";
-import { decryptFlixStream, findAndStream, isStreamTokenExpired } from "@/lib/reanime";
+import { decryptFlixStream, findAndStream } from "@/lib/reanime";
+import { getFreshStreamToken } from "@/lib/token-refresher";
+import { isStreamTokenExpired } from "@/lib/token-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -73,28 +75,17 @@ export async function GET(request: NextRequest) {
     }
 
     const tryRefreshStream = async () => {
-      if (aid) {
-        try {
-          const fresh = await decryptFlixStream(aid, v);
-          if (fresh.hls && !isStreamTokenExpired(fresh.hls)) {
-            return { hls: fresh.hls, pk: fresh.pk };
-          }
-        } catch {}
-      }
-      if (q) {
-        try {
-          const targetAnilistId = /^\d+$/.test(q) ? parseInt(q, 10) : undefined;
-          const freshData = await findAndStream({
-            anilistId: targetAnilistId,
-            query: !targetAnilistId ? q : undefined,
-            episode: ep,
-            server: server,
-          });
-          const matching = (freshData.all_servers || []).find((s) => s.audio === audio) || freshData;
-          if (matching?.hls && !isStreamTokenExpired(matching.hls)) {
-            return { hls: matching.hls, pk: matching.pk };
-          }
-        } catch {}
+      const fresh = await getFreshStreamToken({
+        aid,
+        v,
+        q,
+        ep,
+        server,
+        audio,
+        forceFresh: true,
+      });
+      if (fresh?.hls && !isStreamTokenExpired(fresh.hls)) {
+        return { hls: fresh.hls, pk: fresh.pk };
       }
       return null;
     };
@@ -304,14 +295,28 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        const isFlixcloudStream = Boolean(aid || pk || (targetUrl && (targetUrl.includes("flixcloud") || targetUrl.includes("atomic4cdn"))));
+        const isFlixcloudStream = Boolean(
+          aid ||
+          pk ||
+          (targetUrl &&
+            (targetUrl.includes("flixcloud") ||
+              targetUrl.includes("atomic4cdn") ||
+              targetUrl.includes("rundowncdn")))
+        );
+
+        const aidParam = aid ? `&aid=${encodeURIComponent(aid)}` : "";
+        const vParam = v ? `&v=${v}` : "";
+        const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
+        const epParam = ep ? `&ep=${ep}` : "";
+        const srvParam = server ? `&server=${encodeURIComponent(server)}` : "";
+        const audioParam = audio ? `&audio=${encodeURIComponent(audio)}` : "";
 
         // Handle #EXT-X-MAP with URI
         if (trimmed.startsWith("#EXT-X-MAP:") && trimmed.includes('URI="')) {
           const rewrittenMap = line.replace(/URI="([^"]+)"/, (m, uri) => {
             const abs = resolveUrlWithBase(uri);
             if (isFlixcloudStream) {
-              return `URI="/api/proxy/ts?url=${encodeURIComponent(abs)}"`;
+              return `URI="/api/proxy/ts?url=${encodeURIComponent(abs)}${aidParam}${vParam}${qParam}${epParam}${srvParam}"`;
             }
             const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
             const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
@@ -329,7 +334,7 @@ export async function GET(request: NextRequest) {
             if (isFlixcloudStream) {
               const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
               const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
-              return `URI="/api/proxy/key?url=${encodeURIComponent(abs)}${refParam}${origParam}"`;
+              return `URI="/api/proxy/key?url=${encodeURIComponent(abs)}${aidParam}${vParam}${qParam}${epParam}${srvParam}${audioParam}${refParam}${origParam}"`;
             }
             const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
             const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
@@ -346,11 +351,8 @@ export async function GET(request: NextRequest) {
           const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
           const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
           const uaParam = ua ? `&ua=${encodeURIComponent(ua)}` : "";
-          const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
-          const epParam = ep ? `&ep=${ep}` : "";
-          const srvParam = server ? `&server=${encodeURIComponent(server)}` : "";
           rewrittenLines.push(
-            `/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${audio}${aid ? `&aid=${encodeURIComponent(aid)}` : ""}${v ? `&v=${v}` : ""}${qParam}${epParam}${srvParam}${refParam}${origParam}${uaParam}`
+            `/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${audio}${aidParam}${vParam}${qParam}${epParam}${srvParam}${refParam}${origParam}${uaParam}`
           );
           continue;
         }
@@ -359,7 +361,7 @@ export async function GET(request: NextRequest) {
         if (!trimmed.startsWith("#")) {
           const abs = resolveUrlWithBase(trimmed);
           if (isFlixcloudStream) {
-            rewrittenLines.push(`/api/proxy/ts?url=${encodeURIComponent(abs)}`);
+            rewrittenLines.push(`/api/proxy/ts?url=${encodeURIComponent(abs)}${aidParam}${vParam}${qParam}${epParam}${srvParam}`);
           } else {
             const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
             const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
