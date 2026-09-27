@@ -5,7 +5,7 @@
 <h1 align="center">AniFlow API</h1>
 
 <p align="center">
-  <strong>Developer-First Anime Embedding Engine & High-Performance Streaming Player</strong>
+  <strong>Stream Anime on Any Website — High-Performance Embedding Engine & Video Player</strong>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 **AniFlow API** is a complete, self-hostable anime embedding backend and modern streaming player. It enables developers to seamlessly embed high-performance anime playback directly into their websites and applications with a single iframe URL.
 
-Designed from the ground up for speed, reliability, and visual polish, AniFlow features multi-server fallback routing, intelligent AniList/MAL identifier mapping, automatic intro/outro skipping, sub-second HLS proxying, and bidirectional `postMessage` synchronization.
+Designed from the ground up for speed, reliability, and visual polish, AniFlow features multi-server fallback routing, intelligent AniList/MAL identifier mapping, automatic intro/outro skipping, sub-second HLS proxying, bidirectional `postMessage` synchronization, and native mobile gesture controls with 16:9 fullscreen locking.
 
 ---
 
@@ -40,6 +40,7 @@ Designed from the ground up for speed, reliability, and visual polish, AniFlow f
   - **Zuri**: Dedicated subbed stream source (Sub only).
 - **Dual Database Mapping**: Seamless support for both **AniList** (`/embed/ani/...`) and **MyAnimeList** (`/embed/mal/...`) IDs with automated fallback resolution.
 - **Liquid Glass Dark Minimalist Player**: Crafted with the unified `shad-renew` aesthetic—featuring backdrop blur capsules, true inset highlights, subtle glow markers, and zero visual clutter.
+- **Mobile First & 16:9 Fullscreen**: Native mobile gestures (smart single-tap controls toggle, double-tap left/right 10s seek) and strict 16:9 landscape orientation lock on phones.
 - **Auto-Skip Intro & Outro**: Native integration with the AniSkip API. Timestamps are highlighted directly on the timeline scrubber with automatic transition capabilities.
 - **Complete In-Player Customization**:
   - **Server Selection**: Dedicated Sub/Dub categorical server browser.

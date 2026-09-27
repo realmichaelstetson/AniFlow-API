@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "aniflow — High-Performance Anime Embedding API & Player",
+  title: "AniFlow API — High-Performance Anime Embedding API & Player",
   description:
     "Developer-first AniList & MAL anime embedding API. Flow, Yuri & Zuri servers, Sub/Dub switching, edge-proxied HLS, and postMessage event sync.",
   icons: {

@@ -150,7 +150,6 @@ export function EmbedPlayer({
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [volumeBoost, setVolumeBoost] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isPortraitFs, setIsPortraitFs] = useState(false);
   const [isTheater, setIsTheater] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -228,11 +227,13 @@ export function EmbedPlayer({
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const progressSaveTimer = useRef<NodeJS.Timeout | null>(null);
   const isPlayingRef = useRef<boolean>(false);
+  const showControlsRef = useRef<boolean>(true);
   const isSwitchingServerRef = useRef<boolean>(false);
   const preserveTimeRef = useRef<number>(startAt || 0);
   const hasAutoSkippedIntroRef = useRef<boolean>(false);
   const hasAutoSkippedOutroRef = useRef<boolean>(false);
   const lastTouchTimeRef = useRef<number>(0);
+  const lastTapInfoRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const singleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const seekFeedbackTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -241,13 +242,28 @@ export function EmbedPlayer({
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const connectedVideoRef = useRef<HTMLVideoElement | null>(null);
 
+  const lastProgressEmitRef = useRef<number>(0);
+
   // Broadcast to parent page via PostMessage
   const postToParent = useCallback(
-    (type: string, data: any) => {
+    (name: string, data: any, requestId?: string) => {
       if (typeof window === "undefined" || window.parent === window) return;
       try {
-        window.parent.postMessage({ type, data }, "*");
-        if (type === "PLAYER_EVENT" && data?.type === "time") {
+        // Standard aniembed format from specification
+        window.parent.postMessage(
+          {
+            source: "aniembed",
+            version: 1,
+            name,
+            requestId,
+            data,
+          },
+          "*"
+        );
+
+        // Backward compatibility for existing listeners
+        window.parent.postMessage({ type: "PLAYER_EVENT", data: { type: name, ...data } }, "*");
+        if (name === "progress") {
           window.parent.postMessage({ type: "watching-log", ...data }, "*");
         }
       } catch {}
@@ -317,14 +333,16 @@ export function EmbedPlayer({
     }
   };
 
-  // Activity detection & Auto-hide Controls
+  // Activity detection & Auto-hide Controls (3 seconds auto-hide when playing)
   const handleUserActivity = useCallback(() => {
     setShowControls(true);
+    showControlsRef.current = true;
     if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
     if (isPlayingRef.current) {
       hideControlsTimer.current = setTimeout(() => {
         if (!showSettingsMenu) {
           setShowControls(false);
+          showControlsRef.current = false;
         }
       }, 3000);
     }
@@ -706,14 +724,18 @@ export function EmbedPlayer({
       hasAutoSkippedOutroRef.current = false;
     }
 
-    // Post to parent & Watch progress sync
-    postToParent("PLAYER_EVENT", {
-      type: "time",
-      currentTime: current,
-      duration: dur,
-      buffered,
-      percentage: dur > 0 ? (current / dur) * 100 : 0,
-    });
+    // Playing-state snapshot emitted every five seconds
+    const now = Date.now();
+    if (now - lastProgressEmitRef.current >= 5000) {
+      lastProgressEmitRef.current = now;
+      postToParent("progress", {
+        currentTime: Math.round(current * 100) / 100,
+        duration: Math.round(dur * 100) / 100,
+        buffered: Math.round(buffered * 100) / 100,
+        percentage: dur > 0 ? Math.round((current / dur) * 1000) / 10 : 0,
+        paused: false,
+      });
+    }
 
     if (!progressSaveTimer.current) {
       progressSaveTimer.current = setTimeout(() => {
@@ -854,9 +876,10 @@ export function EmbedPlayer({
     } catch {}
   };
 
-  // Fullscreen toggler
-  const toggleFullscreen = () => {
+  // Fullscreen toggler - locks to 16:9 landscape on mobile phones
+  const toggleFullscreen = async () => {
     const el = containerRef.current;
+    const video = videoRef.current;
     if (!el) return;
     const isFs = Boolean(
       document.fullscreenElement ||
@@ -864,6 +887,18 @@ export function EmbedPlayer({
     );
 
     if (!isFs) {
+      // On iOS iPhone Safari: use webkitEnterFullscreen which native-locks to 16:9 landscape
+      const isIPhone = typeof navigator !== "undefined" && /iPhone|iPod/.test(navigator.userAgent);
+      if (isIPhone && video && (video as any).webkitEnterFullscreen) {
+        try {
+          (video as any).webkitEnterFullscreen();
+          setIsFullscreen(true);
+          return;
+        } catch (err) {
+          console.warn("webkitEnterFullscreen fallback", err);
+        }
+      }
+
       const requestFs =
         el.requestFullscreen ||
         (el as any).webkitRequestFullscreen ||
@@ -871,9 +906,18 @@ export function EmbedPlayer({
         (el as any).msRequestFullscreen;
 
       if (requestFs) {
-        requestFs.call(el).catch(() => {});
+        try {
+          await requestFs.call(el);
+        } catch {}
       }
       setIsFullscreen(true);
+
+      // Lock orientation to 16:9 landscape on mobile devices
+      try {
+        if (screen.orientation && (screen.orientation as any).lock) {
+          await (screen.orientation as any).lock("landscape");
+        }
+      } catch {}
     } else {
       const exitFs =
         document.exitFullscreen ||
@@ -882,10 +926,17 @@ export function EmbedPlayer({
         (document as any).msExitFullscreen;
 
       if (exitFs) {
-        exitFs.call(document).catch(() => {});
+        try {
+          await exitFs.call(document);
+        } catch {}
       }
       setIsFullscreen(false);
-      setIsPortraitFs(false);
+
+      try {
+        if (screen.orientation && (screen.orientation as any).unlock) {
+          (screen.orientation as any).unlock();
+        }
+      } catch {}
     }
   };
 
@@ -928,46 +979,96 @@ export function EmbedPlayer({
     }
   };
 
-  // Double tap on mobile
+  // Mobile touch handler: Smart single-tap controls toggle & double-tap seek
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     lastTouchTimeRef.current = Date.now();
     const touch = e.changedTouches[0];
     if (!touch || !containerRef.current) return;
 
+    // Do not toggle or seek if user tapped on interactive control buttons, sliders or menus
+    const target = e.target as HTMLElement;
+    if (
+      target.closest("button") ||
+      target.closest("input") ||
+      target.closest(".group\\/timeline") ||
+      target.closest("[role='dialog']") ||
+      target.closest("[role='menu']") ||
+      target.closest("[data-controls-bar='true']")
+    ) {
+      handleUserActivity();
+      return;
+    }
+
     const rect = containerRef.current.getBoundingClientRect();
     const x = touch.clientX - rect.left;
     const width = rect.width;
+    const now = Date.now();
+    const lastTap = lastTapInfoRef.current;
 
-    if (x < width * 0.42) {
-      const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
-      handleSeek(cur - 10);
-      setSeekFeedback((prev) => ({
-        side: "left",
-        amount: prev?.side === "left" ? prev.amount + 10 : 10,
-      }));
-      if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
-      seekFeedbackTimerRef.current = setTimeout(() => setSeekFeedback(null), 700);
+    // Detect true double-tap: within 320ms and within 45px radius
+    const isDoubleTap =
+      lastTap &&
+      now - lastTap.time < 320 &&
+      Math.abs(touch.clientX - lastTap.x) < 45 &&
+      Math.abs(touch.clientY - lastTap.y) < 45;
+
+    if (isDoubleTap) {
+      lastTapInfoRef.current = null;
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+
+      if (x < width * 0.4) {
+        // Double-tap left: seek -10s
+        const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
+        handleSeek(cur - 10);
+        setSeekFeedback((prev) => ({
+          side: "left",
+          amount: prev?.side === "left" ? prev.amount + 10 : 10,
+        }));
+        if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
+        seekFeedbackTimerRef.current = setTimeout(() => setSeekFeedback(null), 700);
+        handleUserActivity();
+        return;
+      }
+
+      if (x > width * 0.6) {
+        // Double-tap right: seek +10s
+        const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
+        handleSeek(cur + 10);
+        setSeekFeedback((prev) => ({
+          side: "right",
+          amount: prev?.side === "right" ? prev.amount + 10 : 10,
+        }));
+        if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
+        seekFeedbackTimerRef.current = setTimeout(() => setSeekFeedback(null), 700);
+        handleUserActivity();
+        return;
+      }
+
+      // Double-tap center: toggle play/pause
+      togglePlay();
       handleUserActivity();
       return;
     }
 
-    if (x > width * 0.58) {
-      const cur = videoRef.current ? videoRef.current.currentTime : currentTime;
-      handleSeek(cur + 10);
-      setSeekFeedback((prev) => ({
-        side: "right",
-        amount: prev?.side === "right" ? prev.amount + 10 : 10,
-      }));
-      if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
-      seekFeedbackTimerRef.current = setTimeout(() => setSeekFeedback(null), 700);
-      handleUserActivity();
-      return;
-    }
+    // Record potential first tap
+    lastTapInfoRef.current = { time: now, x: touch.clientX, y: touch.clientY };
 
     if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
     singleTapTimerRef.current = setTimeout(() => {
-      setShowControls((prev) => !prev);
       singleTapTimerRef.current = null;
+      lastTapInfoRef.current = null;
+
+      const wasControlsVisible = showControlsRef.current;
+      // Always show/keep controls visible and wait 3s before auto-hiding - just like on PC!
+      handleUserActivity();
+
+      // If controls were already visible, tapping the screen toggles play/pause (just like on PC!)
+      if (wasControlsVisible) {
+        togglePlay();
+      }
     }, 250);
   };
 
@@ -1066,39 +1167,7 @@ export function EmbedPlayer({
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  // Listen to postMessage from parent iframe
-  useEffect(() => {
-    const handleMessage = (e: MessageEvent) => {
-      const data = e.data;
-      if (!data) return;
-      const cmd = typeof data === "string" ? data : data.command || data.action || data.type;
-      switch (cmd) {
-        case "play":
-          videoRef.current?.play().catch(() => {});
-          break;
-        case "pause":
-          videoRef.current?.pause();
-          break;
-        case "seek":
-          if (typeof data.time === "number" || typeof data.seconds === "number") {
-            handleSeek(data.time ?? data.seconds);
-          }
-          break;
-        case "getStatus":
-          postToParent("PLAYER_EVENT", {
-            type: "status",
-            currentTime,
-            duration,
-            isPlaying,
-            isMuted,
-            volume,
-          });
-          break;
-      }
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [currentTime, duration, isPlaying, isMuted, volume, postToParent]);
+
 
   // Keep isPlayingRef updated and trigger auto-hide
   useEffect(() => {
@@ -1111,6 +1180,10 @@ export function EmbedPlayer({
     }
   }, [isPlaying, handleUserActivity]);
 
+  useEffect(() => {
+    showControlsRef.current = showControls;
+  }, [showControls]);
+
   // Fullscreen change listener
   useEffect(() => {
     const handleFsChange = () => {
@@ -1121,10 +1194,17 @@ export function EmbedPlayer({
       setIsFullscreen(isFs);
       if (isFs) {
         handleUserActivity();
-        const isPortrait = window.innerHeight > window.innerWidth;
-        setIsPortraitFs(isPortrait);
+        try {
+          if (screen.orientation && (screen.orientation as any).lock) {
+            (screen.orientation as any).lock("landscape").catch(() => {});
+          }
+        } catch {}
       } else {
-        setIsPortraitFs(false);
+        try {
+          if (screen.orientation && (screen.orientation as any).unlock) {
+            (screen.orientation as any).unlock();
+          }
+        } catch {}
       }
     };
     document.addEventListener("fullscreenchange", handleFsChange);
@@ -1463,6 +1543,181 @@ export function EmbedPlayer({
     });
   }, [currentTime, selectedType, formatServerRouteName, showToast, postToParent]);
 
+  // Current player state snapshot
+  const getPlayerState = useCallback(() => {
+    const video = videoRef.current;
+    const curTime = video && !isNaN(video.currentTime) ? video.currentTime : currentTime;
+    const dur = video && !isNaN(video.duration) ? video.duration : duration;
+    return {
+      currentTime: Math.round((curTime || 0) * 100) / 100,
+      duration: Math.round((dur || 0) * 100) / 100,
+      paused: video ? video.paused : !isPlaying,
+      muted: video ? video.muted : isMuted,
+      volume: video ? Math.round(video.volume * 100) / 100 : volume,
+      playbackRate: video ? video.playbackRate : playbackSpeed,
+      percentage: dur > 0 ? Math.round(((curTime || 0) / dur) * 1000) / 10 : 0,
+      provider: {
+        language: selectedType,
+        providerId: server,
+      },
+      episode: episodeNumber,
+      anilistId,
+      malId,
+    };
+  }, [currentTime, duration, isPlaying, isMuted, volume, playbackSpeed, selectedType, server, episodeNumber, anilistId, malId]);
+
+  // Listen to postMessage from parent iframe / SDK
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      const msg = e.data;
+      if (!msg) return;
+
+      const cmdName = msg.name || msg.command || msg.action || (msg.type !== "command" ? msg.type : undefined);
+      if (!cmdName || typeof cmdName !== "string") return;
+
+      const cmdData = msg.data || msg;
+      const requestId = msg.requestId;
+
+      const sendResult = (ok: boolean, error?: string) => {
+        if (!requestId) return;
+        const state = getPlayerState();
+        if (typeof window !== "undefined" && window.parent && window.parent !== window) {
+          window.parent.postMessage(
+            {
+              source: "aniembed",
+              version: 1,
+              name: "command-result",
+              requestId,
+              data: ok ? { ok: true, state } : { ok: false, error: error || "Command execution failed" },
+            },
+            "*"
+          );
+        }
+      };
+
+      const video = videoRef.current;
+
+      switch (cmdName) {
+        case "play": {
+          if (video) {
+            video
+              .play()
+              .then(() => {
+                setIsPlaying(true);
+                sendResult(true);
+              })
+              .catch((err) => {
+                sendResult(false, err?.message || "Playback error");
+              });
+          } else {
+            sendResult(false, "Video element unavailable");
+          }
+          break;
+        }
+
+        case "pause": {
+          if (video) {
+            video.pause();
+            setIsPlaying(false);
+            sendResult(true);
+          } else {
+            sendResult(false, "Video element unavailable");
+          }
+          break;
+        }
+
+        case "seek": {
+          const seekTarget = Number(cmdData.time ?? cmdData.seconds ?? 0);
+          if (!isNaN(seekTarget)) {
+            handleSeek(seekTarget);
+            sendResult(true);
+          } else {
+            sendResult(false, "Invalid seek time parameter");
+          }
+          break;
+        }
+
+        case "setVolume": {
+          const targetVol = Number(cmdData.volume ?? 1);
+          if (!isNaN(targetVol)) {
+            const clamped = Math.max(0, Math.min(1, targetVol));
+            if (video) {
+              video.volume = clamped;
+              if (clamped > 0 && (video.muted || isMuted)) {
+                video.muted = false;
+                setIsMuted(false);
+              }
+            }
+            setVolume(clamped);
+            sendResult(true);
+          } else {
+            sendResult(false, "Invalid volume parameter (must be 0..1)");
+          }
+          break;
+        }
+
+        case "setMuted": {
+          const mutedBool = Boolean(cmdData.muted);
+          if (video) {
+            video.muted = mutedBool;
+          }
+          setIsMuted(mutedBool);
+          sendResult(true);
+          break;
+        }
+
+        case "setPlaybackRate": {
+          const targetRate = Number(cmdData.rate ?? cmdData.playbackRate ?? 1);
+          if (!isNaN(targetRate)) {
+            const clampedRate = Math.max(0.25, Math.min(2, targetRate));
+            if (video) {
+              video.playbackRate = clampedRate;
+            }
+            setPlaybackSpeed(clampedRate);
+            sendResult(true);
+          } else {
+            sendResult(false, "Invalid rate parameter (0.25..2)");
+          }
+          break;
+        }
+
+        case "setProvider": {
+          const lang = (cmdData.language || "sub").toLowerCase();
+          const pId = (cmdData.providerId || "").toLowerCase();
+          const langUpper = lang.toUpperCase();
+
+          const found = sources.find((s) => {
+            const typeOk = s.type.toUpperCase() === langUpper;
+            const provOk = !pId || s.id?.toLowerCase().includes(pId) || s.serverName?.toLowerCase().includes(pId);
+            return typeOk && provOk;
+          }) || sources.find((s) => s.type.toUpperCase() === langUpper);
+
+          if (found) {
+            handleSelectSource(found);
+          } else {
+            setSelectedType(lang as "sub" | "dub");
+            if (pId) setServer(pId);
+          }
+          sendResult(true);
+          break;
+        }
+
+        case "getState":
+        case "getStatus": {
+          sendResult(true);
+          postToParent("PLAYER_EVENT", {
+            type: "status",
+            ...getPlayerState(),
+          });
+          break;
+        }
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [getPlayerState, handleSeek, handleSelectSource, sources, postToParent]);
+
   return (
     <div
       ref={containerRef}
@@ -1470,27 +1725,12 @@ export function EmbedPlayer({
       onClick={handleScreenClick}
       onTouchEnd={handleTouchEnd}
       onDoubleClick={handleDoubleClick}
-      style={{
-        ...(isPortraitFs
-          ? {
-              position: "fixed",
-              top: "50%",
-              left: "50%",
-              width: "100vh",
-              height: "100vw",
-              transform: "translate(-50%, -50%) rotate(90deg)",
-              transformOrigin: "center center",
-              zIndex: 99999,
-              maxWidth: "none",
-              maxHeight: "none",
-            }
-          : {}),
-      }}
+      style={{}}
       className={cn(
         "relative w-full h-full bg-black overflow-hidden select-none transition-all duration-300 touch-manipulation font-product-sans",
         !showControls ? "cursor-none [&_*]:!cursor-none" : "cursor-default",
-        isFullscreen || isPortraitFs
-          ? "fixed inset-0 z-[99999] w-screen h-screen rounded-none border-0 max-h-none"
+        isFullscreen
+          ? "fixed inset-0 z-[99999] w-screen h-screen rounded-none border-0 max-h-none flex items-center justify-center bg-black"
           : "rounded-none border-0"
       )}
     >
@@ -1527,6 +1767,26 @@ export function EmbedPlayer({
           if (isSwitchingServerRef.current) return;
           setIsLoading(false);
           setIsPlaying(false);
+          const v = videoRef.current;
+          const cur = v ? v.currentTime : currentTime;
+          const dur = v ? v.duration : duration;
+          postToParent("pause", {
+            currentTime: Math.round(cur * 100) / 100,
+            duration: Math.round((dur || 0) * 100) / 100,
+            percentage: dur > 0 ? Math.round((cur / dur) * 1000) / 10 : 0,
+            paused: true,
+          });
+        }}
+        onEnded={() => {
+          setIsPlaying(false);
+          const v = videoRef.current;
+          const dur = v ? v.duration : duration;
+          postToParent("ended", {
+            currentTime: Math.round((dur || 0) * 100) / 100,
+            duration: Math.round((dur || 0) * 100) / 100,
+            percentage: 100,
+            paused: true,
+          });
         }}
         playsInline
         crossOrigin="anonymous"
@@ -1659,7 +1919,7 @@ export function EmbedPlayer({
               }}
               className={cn(
                 "rounded-full bg-zinc-950/80 active:bg-zinc-900/95 backdrop-blur-2xl backdrop-saturate-150 text-white flex items-center justify-center shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.25)] active:scale-95 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] touch-manipulation cursor-pointer",
-                isFullscreen || isPortraitFs ? "w-16 h-16" : "w-14 h-14",
+                isFullscreen ? "w-16 h-16" : "w-14 h-14",
                 showControls || !isPlaying ? "scale-100 pointer-events-auto" : "scale-0 pointer-events-none"
               )}
               title={isPlaying ? "Pause" : "Play"}
@@ -1668,14 +1928,14 @@ export function EmbedPlayer({
                 <Pause
                   className={cn(
                     "fill-white text-white drop-shadow-[0_0_12px_rgba(255,255,255,0.9)]",
-                    isFullscreen || isPortraitFs ? "w-7 h-7" : "w-6 h-6"
+                    isFullscreen ? "w-7 h-7" : "w-6 h-6"
                   )}
                 />
               ) : (
                 <Play
                   className={cn(
                     "fill-white text-white ml-0.5 drop-shadow-[0_0_12px_rgba(255,255,255,0.9)]",
-                    isFullscreen || isPortraitFs ? "w-7 h-7" : "w-6 h-6"
+                    isFullscreen ? "w-7 h-7" : "w-6 h-6"
                   )}
                 />
               )}
