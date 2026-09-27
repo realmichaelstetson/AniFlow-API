@@ -401,6 +401,16 @@ export function EmbedPlayer({
           const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
           if (sNorm.includes("flow-2") || sNorm === "flow2") {
             selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("flow-2") || s.id?.includes("flow2")) && typeMatch(s));
+          } else if (sNorm.includes("paradise")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("paradise") || s.serverName?.toLowerCase().includes("paradise")) && typeMatch(s));
+          } else if (sNorm.includes("kaido")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("kaido") || s.serverName?.toLowerCase().includes("kaido")) && typeMatch(s));
+          } else if (sNorm.includes("kaa")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("kaa") || s.serverName?.toLowerCase().includes("kaa")) && typeMatch(s));
+          } else if (sNorm.includes("hianime")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("hianime") || s.serverName?.toLowerCase().includes("hianime")) && typeMatch(s));
+          } else if (sNorm.includes("gogo")) {
+            selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("gogo") || s.serverName?.toLowerCase().includes("gogo")) && typeMatch(s));
           } else if (sNorm.includes("yuri") || sNorm.includes("yuki")) {
             selectedSource = data.sources.find((s: VideoSourceData) => (s.id?.includes("yuri") || s.id?.includes("yuki")) && typeMatch(s));
           } else if (sNorm.includes("zuri") || sNorm.includes("zuna")) {
@@ -1357,7 +1367,52 @@ export function EmbedPlayer({
       return "Yuri";
     }
 
-    // 3. Flow 2 from Re:ANIME
+    // 3. AnimeParadise from Consumet
+    if (
+      sId.includes("animeparadise") ||
+      sName.includes("animeparadise") ||
+      sUrl.includes("animeparadise")
+    ) {
+      return "AnimeParadise";
+    }
+
+    // 4. Kaido from Extractor
+    if (
+      sId.includes("kaido") ||
+      sName.includes("kaido") ||
+      sUrl.includes("kaido")
+    ) {
+      return "Kaido";
+    }
+
+    // 5. Kaa from Extractor
+    if (
+      sId.includes("kaa") ||
+      sName.includes("kaa") ||
+      sUrl.includes("kaa")
+    ) {
+      return "Kaa";
+    }
+
+    // 6. HiAnime from Consumet
+    if (
+      sId.includes("hianime") ||
+      sName.includes("hianime") ||
+      sUrl.includes("hianime")
+    ) {
+      return "HiAnime";
+    }
+
+    // 7. Gogoanime from Consumet
+    if (
+      sId.includes("gogo") ||
+      sName.includes("gogo") ||
+      sUrl.includes("gogo")
+    ) {
+      return "Gogoanime";
+    }
+
+    // 8. Flow 2 from Re:ANIME
     if (
       sId.includes("flow-2") ||
       sId.includes("flow2") ||
@@ -1372,7 +1427,7 @@ export function EmbedPlayer({
       return "Flow 2";
     }
 
-    // 4. Flow 1 from Re:ANIME
+    // 9. Flow 1 from Re:ANIME
     if (
       sId.includes("flow-1") ||
       sId.includes("flow1") ||
@@ -1419,7 +1474,17 @@ export function EmbedPlayer({
   }, []);
 
   const sortSourcesByProvider = useCallback((a: VideoSourceData, b: VideoSourceData) => {
-    const SERVER_SORT_ORDER = ["flow 1", "flow 2", "yuri", "zuri"];
+    const SERVER_SORT_ORDER = [
+      "flow 1",
+      "flow 2",
+      "animeparadise",
+      "kaido",
+      "kaa",
+      "hianime",
+      "gogoanime",
+      "yuri",
+      "zuri",
+    ];
     const provA = getSourceProvider(a).toLowerCase();
     const provB = getSourceProvider(b).toLowerCase();
     const idxA = SERVER_SORT_ORDER.indexOf(provA);
@@ -2632,7 +2697,7 @@ export function EmbedPlayer({
                     </div>
                   ) : (
                     nativeSubSources.map((src) => {
-                      const isSelected = (currentSource?.id === src.id) || (streamUrl === src.videoUrl);
+                      const isSelected = (activeSourceId || currentSource?.id) === src.id;
                       const name = formatServerRouteName(src);
                       const audio = "Sub";
                       return isSelected ? (
@@ -2688,7 +2753,7 @@ export function EmbedPlayer({
                     </div>
                   ) : (
                     nativeDubSources.map((src) => {
-                      const isSelected = (currentSource?.id === src.id) || (streamUrl === src.videoUrl);
+                      const isSelected = (activeSourceId || currentSource?.id) === src.id;
                       const name = formatServerRouteName(src);
                       const audio = "English Dub";
                       return isSelected ? (

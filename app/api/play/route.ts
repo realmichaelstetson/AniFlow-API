@@ -586,6 +586,38 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      if (allServersFormatted.length > 0) {
+        const targetServerNorm = serverParam.toLowerCase().replace(/[\s_-]/g, "");
+        if (targetServerNorm && targetServerNorm !== "all" && targetServerNorm !== "flow" && targetServerNorm !== "flow1") {
+          const matchingRequested = allServersFormatted.find((s) => {
+            const sId = (s.id || "").toLowerCase().replace(/[\s_-]/g, "");
+            const sName = (s.server || s.name || "").toLowerCase().replace(/[\s_-]/g, "");
+            return (
+              sId.includes(targetServerNorm) ||
+              sName.includes(targetServerNorm) ||
+              targetServerNorm.includes(sName) ||
+              (targetServerNorm.includes("paradise") && (sId.includes("paradise") || sName.includes("paradise"))) ||
+              (targetServerNorm.includes("kaido") && (sId.includes("kaido") || sName.includes("kaido"))) ||
+              (targetServerNorm.includes("kaa") && (sId.includes("kaa") || sName.includes("kaa"))) ||
+              (targetServerNorm.includes("hianime") && (sId.includes("hianime") || sName.includes("hianime"))) ||
+              (targetServerNorm.includes("gogo") && (sId.includes("gogo") || sName.includes("gogo")))
+            );
+          });
+          if (matchingRequested?.videoUrl) {
+            resolvedServerName = matchingRequested.server || matchingRequested.name;
+            result = {
+              server: resolvedServerName,
+              serverName: matchingRequested.serverName || resolvedServerName,
+              audio: matchingRequested.audio || audio,
+              m3u8: matchingRequested.videoUrl,
+              fullM3u8: matchingRequested.videoUrl.startsWith("http") ? matchingRequested.videoUrl : `${baseUrl}${matchingRequested.videoUrl}`,
+              subtitles: matchingRequested.subtitles || [],
+              allServers: allServersFormatted,
+            };
+          }
+        }
+      }
+
       if (result && (!result.allServers || result.allServers.length === 0)) {
         result.allServers = allServersFormatted;
       }

@@ -41,63 +41,25 @@ const DOC_TABS: { id: DocTab; label: string; icon: React.ComponentType<{ classNa
 ];
 
 const DATABASE_OPTIONS = [
-  {
-    id: "ani" as const,
-    name: "AniList",
-    badge: "Default",
-    desc: "Target media using AniList GraphQL identifier format.",
-    example: "e.g. 16498 (Attack on Titan)",
-  },
-  {
-    id: "mal" as const,
-    name: "MyAnimeList (MAL)",
-    badge: "MAL ID",
-    desc: "Target media using MyAnimeList ID with automated fallback mapping.",
-    example: "e.g. 52991 (Sousou no Frieren)",
-  },
+  { id: "ani" as const, name: "AniList" },
+  { id: "mal" as const, name: "MyAnimeList" },
 ];
 
 const AUDIO_OPTIONS = [
-  {
-    id: "dub" as const,
-    name: "English Dub",
-    badge: "Dubbed",
-    desc: "English synchronized voiceover audio track.",
-  },
-  {
-    id: "sub" as const,
-    name: "Original Sub",
-    badge: "Subbed",
-    desc: "Original Japanese audio stream with soft/hard subtitles.",
-  },
+  { id: "sub" as const, name: "Original Sub" },
+  { id: "dub" as const, name: "English Dub" },
 ];
 
 const SERVER_OPTIONS = [
-  {
-    id: "flow",
-    name: "Flow",
-    badge: "Primary",
-    desc: "Default high-performance edge stream engine with multi-CDN.",
-  },
-  {
-    id: "flow2",
-    name: "Flow 2",
-    badge: "Backup",
-    desc: "Secondary multi-bitrate server with adaptive HLS quality.",
-  },
-  {
-    id: "yuri",
-    name: "Yuri",
-    badge: "Alternative",
-    desc: "Ultra-low latency alternative route for peak hours.",
-  },
-  {
-    id: "zuri",
-    name: "Zuri",
-    badge: "Sub Only",
-    desc: "Dedicated rapid raw stream engine for Japanese subbed anime.",
-    subOnly: true,
-  },
+  { id: "flow", name: "Flow 1" },
+  { id: "flow2", name: "Flow 2" },
+  { id: "animeparadise", name: "AnimeParadise" },
+  { id: "kaido", name: "Kaido" },
+  { id: "kaa", name: "Kaa", subOnly: true },
+  { id: "hianime", name: "HiAnime" },
+  { id: "gogoanime", name: "Gogoanime" },
+  { id: "yuri", name: "Yuri" },
+  { id: "zuri", name: "Zuri", subOnly: true },
 ];
 
 const ARCHITECTURE_FEATURES = [
@@ -198,7 +160,7 @@ export default function HomePage() {
 
   // Close dropdown on outside click
   useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
+    const handleOutsideClick = (e: MouseEvent | TouchEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest("[data-dropdown-container]")) {
         setOpenDropdown(null);
@@ -206,7 +168,11 @@ export default function HomePage() {
     };
     if (openDropdown) {
       document.addEventListener("mousedown", handleOutsideClick);
-      return () => document.removeEventListener("mousedown", handleOutsideClick);
+      document.addEventListener("touchstart", handleOutsideClick);
+      return () => {
+        document.removeEventListener("mousedown", handleOutsideClick);
+        document.removeEventListener("touchstart", handleOutsideClick);
+      };
     }
   }, [openDropdown]);
 
@@ -498,18 +464,13 @@ export default function HomePage() {
                 Test live embedding parameters: customize database identifier, episode, audio track, and stream server engine below.
               </p>
 
-              {/* Mobile & desktop backdrop when dropdown is open */}
-              {openDropdown && (
-                <div
-                  className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] transition-opacity"
-                  onClick={() => setOpenDropdown(null)}
-                />
-              )}
-
               {/* Responsive 2-col on mobile, single row on desktop */}
               <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-end justify-center gap-2 sm:gap-2.5 max-w-xl mx-auto sm:max-w-none">
                 {/* 1. Database Selector */}
-                <div className="col-span-1 sm:w-auto flex flex-col gap-1 relative" data-dropdown-container>
+                <div
+                  className={cn("col-span-1 sm:w-36 flex flex-col gap-1 relative", openDropdown === "database" && "z-30")}
+                  data-dropdown-container
+                >
                   <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
                     Database
                   </span>
@@ -517,13 +478,13 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setOpenDropdown(openDropdown === "database" ? null : "database")}
                     className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full sm:min-w-[115px] font-product-sans",
+                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
                       openDropdown === "database"
                         ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
                         : "border-white/[0.08] hover:border-white/20"
                     )}
                   >
-                    <span className="truncate">{embedType === "ani" ? "AniList" : "MyAnimeList"}</span>
+                    <span className="truncate">{DATABASE_OPTIONS.find((o) => o.id === embedType)?.name || "AniList"}</span>
                     <ChevronDown
                       className={cn(
                         "w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200",
@@ -540,16 +501,12 @@ export default function HomePage() {
                         exit={{ opacity: 0, y: 3, scale: 0.98 }}
                         transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
                         style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.94)",
+                          backgroundColor: "rgba(12, 12, 12, 0.82)",
                           backdropFilter: "blur(20px)",
                           WebkitBackdropFilter: "blur(20px)",
                         }}
-                        className="absolute top-full mt-1.5 left-0 sm:left-0 sm:right-auto w-[calc(100vw-2rem)] max-w-sm sm:w-80 rounded-xl border border-white/[0.1] p-1.5 shadow-2xl shadow-black/95 z-50 font-product-sans"
+                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans origin-top"
                       >
-                        <div className="px-3 py-2 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400 border-b border-white/[0.06] mb-1 flex items-center justify-between">
-                          <span>Database Identifier Source</span>
-                          <span className="text-zinc-500 font-product-sans text-[11px] font-normal normal-case">2 options</span>
-                        </div>
                         {DATABASE_OPTIONS.map((opt) => {
                           const isSelected = embedType === opt.id;
                           return (
@@ -561,25 +518,14 @@ export default function HomePage() {
                                 setOpenDropdown(null);
                               }}
                               className={cn(
-                                "w-full flex items-start justify-between gap-3 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer group font-product-sans active:scale-[0.99]",
-                                isSelected ? "bg-white/[0.08] text-white" : "hover:bg-white/[0.04] text-zinc-300 hover:text-white"
+                                "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
+                                isSelected
+                                  ? "bg-white/[0.08] text-white"
+                                  : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
                               )}
                             >
-                              <div className="space-y-1 min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-white tracking-tight">{opt.name}</span>
-                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.06] text-zinc-300 border border-white/[0.08] font-medium">
-                                    {opt.badge}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-zinc-400 leading-snug font-product-sans">{opt.desc}</p>
-                                <p className="text-[10px] text-zinc-500 font-mono mt-0.5">{opt.example}</p>
-                              </div>
-                              {isSelected && (
-                                <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                </div>
-                              )}
+                              <span>{opt.name}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
                             </button>
                           );
                         })}
@@ -589,7 +535,10 @@ export default function HomePage() {
                 </div>
 
                 {/* 2. Audio Selector Dropdown */}
-                <div className="col-span-1 sm:w-auto flex flex-col gap-1 relative" data-dropdown-container>
+                <div
+                  className={cn("col-span-1 sm:w-36 flex flex-col gap-1 relative", openDropdown === "audio" && "z-30")}
+                  data-dropdown-container
+                >
                   <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
                     Audio Track
                   </span>
@@ -597,7 +546,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setOpenDropdown(openDropdown === "audio" ? null : "audio")}
                     className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full sm:min-w-[100px] font-product-sans",
+                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
                       openDropdown === "audio"
                         ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
                         : "border-white/[0.08] hover:border-white/20"
@@ -620,16 +569,12 @@ export default function HomePage() {
                         exit={{ opacity: 0, y: 3, scale: 0.98 }}
                         transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
                         style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.94)",
+                          backgroundColor: "rgba(12, 12, 12, 0.82)",
                           backdropFilter: "blur(20px)",
                           WebkitBackdropFilter: "blur(20px)",
                         }}
-                        className="absolute top-full mt-1.5 right-0 sm:left-1/2 sm:-translate-x-1/2 sm:right-auto w-[calc(100vw-2rem)] max-w-sm sm:w-80 rounded-xl border border-white/[0.1] p-1.5 shadow-2xl shadow-black/95 z-50 font-product-sans"
+                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans origin-top"
                       >
-                        <div className="px-3 py-2 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400 border-b border-white/[0.06] mb-1 flex items-center justify-between">
-                          <span>Audio Language Track</span>
-                          <span className="text-zinc-500 font-product-sans text-[11px] font-normal normal-case">2 options</span>
-                        </div>
                         {AUDIO_OPTIONS.map((opt) => {
                           const isSelected = audio === opt.id;
                           return (
@@ -639,30 +584,23 @@ export default function HomePage() {
                               onClick={() => {
                                 const val = opt.id;
                                 setAudio(val);
-                                if (val === "dub" && (server === "zuri" || server === "zuna")) {
-                                  setServer("flow");
+                                if (val === "dub") {
+                                  const cur = SERVER_OPTIONS.find((o) => o.id === server);
+                                  if (cur?.subOnly) {
+                                    setServer("flow");
+                                  }
                                 }
                                 setOpenDropdown(null);
                               }}
                               className={cn(
-                                "w-full flex items-start justify-between gap-3 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer group font-product-sans active:scale-[0.99]",
-                                isSelected ? "bg-white/[0.08] text-white" : "hover:bg-white/[0.04] text-zinc-300 hover:text-white"
+                                "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
+                                isSelected
+                                  ? "bg-white/[0.08] text-white"
+                                  : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
                               )}
                             >
-                              <div className="space-y-1 min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-white tracking-tight">{opt.name}</span>
-                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.06] text-zinc-300 border border-white/[0.08] font-medium">
-                                    {opt.badge}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-zinc-400 leading-snug font-product-sans">{opt.desc}</p>
-                              </div>
-                              {isSelected && (
-                                <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                </div>
-                              )}
+                              <span>{opt.name}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
                             </button>
                           );
                         })}
@@ -672,7 +610,10 @@ export default function HomePage() {
                 </div>
 
                 {/* 3. Server Selector Dropdown */}
-                <div className="col-span-1 sm:w-auto flex flex-col gap-1 relative" data-dropdown-container>
+                <div
+                  className={cn("col-span-1 sm:w-44 flex flex-col gap-1 relative", openDropdown === "server" && "z-30")}
+                  data-dropdown-container
+                >
                   <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
                     Server
                   </span>
@@ -680,14 +621,14 @@ export default function HomePage() {
                     type="button"
                     onClick={() => setOpenDropdown(openDropdown === "server" ? null : "server")}
                     className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full sm:min-w-[110px] font-product-sans",
+                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
                       openDropdown === "server"
                         ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
                         : "border-white/[0.08] hover:border-white/20"
                     )}
                   >
                     <span className="truncate">
-                      {server === "flow" ? "Flow" : server === "flow2" ? "Flow 2" : server === "yuri" ? "Yuri" : "Zuri"}
+                      {SERVER_OPTIONS.find((o) => o.id === server)?.name || "Flow 1"}
                     </span>
                     <ChevronDown
                       className={cn(
@@ -705,16 +646,12 @@ export default function HomePage() {
                         exit={{ opacity: 0, y: 3, scale: 0.98 }}
                         transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
                         style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.94)",
+                          backgroundColor: "rgba(12, 12, 12, 0.82)",
                           backdropFilter: "blur(20px)",
                           WebkitBackdropFilter: "blur(20px)",
                         }}
-                        className="absolute top-full mt-1.5 left-0 sm:left-1/2 sm:-translate-x-1/2 sm:right-auto w-[calc(100vw-2rem)] max-w-sm sm:w-80 rounded-xl border border-white/[0.1] p-1.5 shadow-2xl shadow-black/95 z-50 font-product-sans"
+                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans max-h-72 overflow-y-auto player-menu-scrollbar origin-top"
                       >
-                        <div className="px-3 py-2 text-[10px] font-mono font-semibold uppercase tracking-wider text-zinc-400 border-b border-white/[0.06] mb-1 flex items-center justify-between">
-                          <span>Delivery Stream Engine</span>
-                          <span className="text-zinc-500 font-product-sans text-[11px] font-normal normal-case">4 servers</span>
-                        </div>
                         {SERVER_OPTIONS.map((opt) => {
                           const isSelected = server === opt.id;
                           const isDisabled = opt.subOnly && audio === "dub";
@@ -729,30 +666,20 @@ export default function HomePage() {
                                 setOpenDropdown(null);
                               }}
                               className={cn(
-                                "w-full flex items-start justify-between gap-3 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer group font-product-sans active:scale-[0.99]",
-                                isDisabled && "opacity-40 cursor-not-allowed hover:bg-transparent pointer-events-none",
-                                isSelected ? "bg-white/[0.08] text-white" : !isDisabled && "hover:bg-white/[0.04] text-zinc-300 hover:text-white"
+                                "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
+                                isDisabled && "opacity-35 cursor-not-allowed hover:bg-transparent pointer-events-none",
+                                isSelected
+                                  ? "bg-white/[0.08] text-white"
+                                  : !isDisabled && "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
                               )}
                             >
-                              <div className="space-y-1 min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-white tracking-tight">{opt.name}</span>
-                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.06] text-zinc-300 border border-white/[0.08] font-medium">
-                                    {opt.badge}
-                                  </span>
-                                  {isDisabled && (
-                                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/90 border border-amber-500/20 font-medium">
-                                      Sub only
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[11px] text-zinc-400 leading-snug font-product-sans">{opt.desc}</p>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="truncate">{opt.name}</span>
+                                {opt.subOnly && (
+                                  <span className="text-[10px] font-mono text-zinc-500">Sub</span>
+                                )}
                               </div>
-                              {isSelected && (
-                                <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                </div>
-                              )}
+                              {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
                             </button>
                           );
                         })}
