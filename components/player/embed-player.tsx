@@ -383,11 +383,23 @@ export function EmbedPlayer({
         params.set("server", server);
 
         const res = await fetch(`/api/play?${params.toString()}`);
-        if (!res.ok) {
-          throw new Error(`Failed to load stream (status: ${res.status})`);
-        }
-        const data = await res.json();
+        let data: any = null;
+        try {
+          data = await res.json();
+        } catch {}
+
         if (cancelled) return;
+
+        // If user requested Dub, but no dub exists for this anime/episode across providers
+        if (selectedType === "dub" && (!res.ok || data?.code === "DUB_UNAVAILABLE" || data?.hasDub === false)) {
+          showToast("info", "Ten tytuł nie ma wersji z angielskim dubbingiem (przełączono na napisy)");
+          setSelectedType("sub");
+          return;
+        }
+
+        if (!res.ok) {
+          throw new Error(data?.error || `Failed to load stream (status: ${res.status})`);
+        }
 
         const initialStream = data.streamUrl || data.m3u8 || data.url || data.fullM3u8;
 
@@ -397,24 +409,18 @@ export function EmbedPlayer({
           ? data.allServers
           : [];
 
-        // Build guaranteed standard 9-provider roster for Sub & Dub
+        // Build standard 9-provider roster for Sub fallback (all anime support Japanese Sub)
         const idParams = `${anilistId ? `anilistId=${anilistId}&` : ""}${malId ? `malId=${malId}&` : ""}episode=${episodeNumber}`;
-        const standardFallbackProviders: VideoSourceData[] = [
+        const standardSubFallbackProviders: VideoSourceData[] = [
           { id: "flow-1-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow1&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 1 (Sub)" },
-          { id: "flow-1-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=flow1&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 1 (English Dub)" },
           { id: "flow-2-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow2&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 2 (Sub)" },
-          { id: "flow-2-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=flow2&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow 2 (English Dub)" },
           { id: "animex-yuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (Sub)" },
-          { id: "animex-yuri-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (English Dub)" },
           { id: "animex-zuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=zuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Zuri (Sub)" },
           { id: "animeparadise-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=paradise&format=m3u8`, quality: "1080p", isHls: true, serverName: "AnimeParadise (Sub)" },
           { id: "extract-kaido-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kaido&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaido (Sub)" },
-          { id: "extract-kaido-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=kaido&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaido (English Dub)" },
           { id: "extract-kaa-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kaa&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kaa (Sub)" },
           { id: "consumet-hianime-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=hianime&format=m3u8`, quality: "1080p", isHls: true, serverName: "HiAnime (Sub)" },
-          { id: "consumet-hianime-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=hianime&format=m3u8`, quality: "1080p", isHls: true, serverName: "HiAnime (English Dub)" },
           { id: "consumet-gogoanime-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=gogo&format=m3u8`, quality: "1080p", isHls: true, serverName: "Gogoanime (Sub)" },
-          { id: "consumet-gogoanime-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=gogo&format=m3u8`, quality: "1080p", isHls: true, serverName: "Gogoanime (English Dub)" },
         ];
 
         // Clean & ensure proxying on external URLs
@@ -426,9 +432,9 @@ export function EmbedPlayer({
           return { ...s, videoUrl: u };
         });
 
-        // Merge discovered streams with standard fallback routes
+        // Merge discovered streams with standard sub fallback routes (only add verified sub routes)
         const allAvailableSources: VideoSourceData[] = [...cleanedIncoming];
-        for (const fp of standardFallbackProviders) {
+        for (const fp of standardSubFallbackProviders) {
           if (!allAvailableSources.some((s) => s.id === fp.id)) {
             allAvailableSources.push(fp);
           }
@@ -1632,14 +1638,26 @@ export function EmbedPlayer({
   }, [sources, getSourceProvider, sortSourcesByProvider]);
 
   const nativeDubSources = useMemo<VideoSourceData[]>(() => {
-    // Zuri (zuna from extractor) is strictly SUB ONLY - never present in Dub
-    const isNotZuri = (s: VideoSourceData) => {
+    // Strictly verify genuine DUB sources:
+    // 1. type must be "DUB"
+    // 2. Providers that are strictly Sub-only (Zuri/Zuna, AnimeParadise, Kaa) are excluded
+    // 3. URLs, language, or serverNames pointing to Sub or Japanese are excluded
+    const isRealDub = (s: VideoSourceData) => {
+      if (s.type !== "DUB") return false;
       const id = (s.id || "").toLowerCase();
       const name = (s.serverName || "").toLowerCase();
-      return !id.includes("zuri") && !id.includes("zuna") && !name.includes("zuri") && !name.includes("zuna");
+      const url = (s.videoUrl || "").toLowerCase();
+      const lang = (s.language || "").toLowerCase();
+
+      if (id.includes("zuri") || id.includes("zuna") || name.includes("zuri") || name.includes("zuna")) return false;
+      if (id.includes("paradise") || name.includes("paradise")) return false;
+      if (id.includes("kaa") || name.includes("kaa")) return false;
+      if (url.includes("audio=sub") || url.includes("type=sub")) return false;
+      if (name.includes("(sub)") || lang.includes("japanese")) return false;
+      return true;
     };
-    const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s) && isNotZuri(s));
-    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB" && isNotZuri(s)));
+    const raw = sources.filter((s) => isRealDub(s) && isNativePlayerSource(s));
+    const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter(isRealDub));
     const byProv = new Map<string, VideoSourceData>();
     for (const s of list) {
       const prov = getSourceProvider(s).toLowerCase();

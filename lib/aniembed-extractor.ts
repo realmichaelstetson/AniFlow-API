@@ -511,18 +511,8 @@ export async function resolveAnimexPlayStream({
 
   if (!result || !result.sources?.[0] || !selectedProvider) {
     if (type === "dub") {
-      try {
-        const subRes = await getSource(targetSlug, episode, "sub", "zuna");
-        if (subRes?.sources && subRes.sources.length > 0 && subRes.sources[0]?.url) {
-          result = subRes;
-          selectedProvider = "Zuri";
-          type = "sub";
-        }
-      } catch {}
+      throw new Error(`English Dub is not available on Yuri/Animex for this episode.`);
     }
-  }
-
-  if (!result || !result.sources?.[0] || !selectedProvider) {
     throw (
       lastError ||
       new Error(`No working stream source found across providers (${candidateProviders.join(", ")})`)
@@ -629,11 +619,11 @@ export async function getAnimexEpisodeSources(
       });
     }
 
-    // 2. Resolve DUB providers: Yuri only
+    // 2. Resolve DUB providers: Yuri only (strictly when dub exists on Animex)
     const targetDubProviders: AnimexProvider[] = [];
     const existingDubYuri = info.dubProviders?.find((p) => p.id.toLowerCase() === "yuki" || p.id.toLowerCase() === "yuri");
-    if (existingDubYuri || (info.dubProviders && info.dubProviders.length > 0)) {
-      targetDubProviders.push(existingDubYuri || { id: "yuri", default: true, tip: "Yuri" });
+    if (existingDubYuri) {
+      targetDubProviders.push(existingDubYuri);
     }
 
     for (const p of targetDubProviders) {

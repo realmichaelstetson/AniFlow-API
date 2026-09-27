@@ -1167,6 +1167,9 @@ export async function findAndStream({
   let audioFallback = false;
 
   if (matching.length === 0) {
+    if (desiredType === "dub") {
+      throw new Error("English Dub is not available on Re:ANIME for this anime/episode");
+    }
     matching = srvData.servers;
     audioFallback = true;
   }
@@ -1237,7 +1240,10 @@ export async function findAndStream({
     }
 
     if (!streamInfo || !streamInfo.hls) {
-      // Fallback 2: Try ANY other server across all audio types
+      if (desiredType === "dub") {
+        throw new Error("English Dub is not available on Re:ANIME for this anime/episode");
+      }
+      // Fallback 2: Try ANY other server across all audio types (only for SUB requests)
       for (const alt of srvData.servers) {
         if (matching.includes(alt) || sameServerCandidates.includes(alt)) continue;
         try {
