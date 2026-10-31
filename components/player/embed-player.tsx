@@ -145,23 +145,8 @@ export function EmbedPlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
-  const [volume, setVolume] = useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const v = localStorage.getItem("anime_player_volume");
-        if (v) return Math.min(1, Math.max(0, parseFloat(v)));
-      } catch {}
-    }
-    return 1;
-  });
-  const [isMuted, setIsMuted] = useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        return localStorage.getItem("anime_player_muted") === "true";
-      } catch {}
-    }
-    return false;
-  });
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
   const [showRemainingTime, setShowRemainingTime] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [volumeBoost, setVolumeBoost] = useState(1);
@@ -192,23 +177,27 @@ export function EmbedPlayer({
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [currentSubtitleText, setCurrentSubtitleText] = useState<string>("");
   const [showSubtitleStyling, setShowSubtitleStyling] = useState(false);
-  const [subtitleStyles, setSubtitleStyles] = useState<SubtitleStyles>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem("anime_subtitle_styles");
-        if (saved) return JSON.parse(saved);
-      } catch {}
-    }
-    return {
-      fontSize: "base",
-      fontFamily: "sans",
-      fontWeight: "bold",
-      color: "#ffffff",
-      background: "transparent",
-      shadow: true,
-      outline: "thick",
-    };
+  const [subtitleStyles, setSubtitleStyles] = useState<SubtitleStyles>({
+    fontSize: "base",
+    fontFamily: "sans",
+    fontWeight: "bold",
+    color: "#ffffff",
+    background: "transparent",
+    shadow: true,
+    outline: "thick",
   });
+
+  // Saved preferences live in localStorage, which the server can't see. Restoring them after
+  // mount keeps the first client render identical to the server HTML (volume icon, subtitle styling).
+  useEffect(() => {
+    try {
+      const savedVolume = parseFloat(localStorage.getItem("anime_player_volume") || "");
+      if (!Number.isNaN(savedVolume)) setVolume(Math.min(1, Math.max(0, savedVolume)));
+      if (localStorage.getItem("anime_player_muted") === "true") setIsMuted(true);
+      const savedStyles = localStorage.getItem("anime_subtitle_styles");
+      if (savedStyles) setSubtitleStyles(JSON.parse(savedStyles));
+    } catch {}
+  }, []);
 
   // Baseline Skip Times (e.g. from Re:ANIME chapters or AniSkip submission)
   const [rawSkipTimes, setRawSkipTimes] = useState<{
