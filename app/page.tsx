@@ -1,53 +1,19 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import {
-  Play,
-  Pause,
-  Copy,
-  Check,
-  Server,
-  Zap,
-  Shield,
-  Layers,
-  ExternalLink,
-  Code2,
-  Terminal,
-  Activity,
-  Sliders,
-  RotateCw,
-  ArrowLeftRight,
-  Wifi,
-  Radio,
-  FileCode,
-  MessageSquare,
-  CheckCircle2,
-  ChevronDown,
-  ArrowDown,
-  HelpCircle,
-  Sparkles,
-} from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { Copy, Check, ExternalLink, ChevronDown, Download, Minus, Plus, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 
-type DocTab = "endpoints" | "implementation" | "options" | "events" | "postmessage";
+type DocTab = "endpoints" | "code" | "options" | "events" | "postmessage";
 
-const DOC_TABS: { id: DocTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "endpoints", label: "Endpoints", icon: ArrowLeftRight },
-  { id: "implementation", label: "Implementation", icon: Code2 },
-  { id: "options", label: "Options", icon: Sliders },
-  { id: "events", label: "Events", icon: Activity },
-  { id: "postmessage", label: "PostMessage", icon: Terminal },
-];
-
-const DATABASE_OPTIONS = [
-  { id: "ani" as const, name: "AniList" },
-  { id: "mal" as const, name: "MyAnimeList" },
-];
-
-const AUDIO_OPTIONS = [
-  { id: "sub" as const, name: "Original Sub" },
-  { id: "dub" as const, name: "English Dub" },
+const DOC_TABS: { id: DocTab; name: string }[] = [
+  { id: "endpoints", name: "Endpoints" },
+  { id: "code", name: "Examples" },
+  { id: "options", name: "Parameters" },
+  { id: "events", name: "Events" },
+  { id: "postmessage", name: "Commands" },
 ];
 
 const SERVER_OPTIONS = [
@@ -58,1596 +24,858 @@ const SERVER_OPTIONS = [
   { id: "buzz", name: "Buzz" },
 ];
 
-const ARCHITECTURE_FEATURES = [
-  {
-    icon: Server,
-    title: "Multi-Server Routing",
-    desc: "Automated failover between Flow, Kitty, Yuri, Zuri, and Buzz stream engines for uninterrupted playback.",
-    key: "failover.engine",
-    value: "5 active mirrors",
-    valueColor: "text-emerald-400",
-  },
-  {
-    icon: Layers,
-    title: "AniList & MAL Mapping",
-    desc: "Target media using AniList GraphQL IDs or MyAnimeList IDs with automated cross-database resolution.",
-    key: "mapping.route",
-    value: "/embed/ani ⇄ /embed/mal",
-    valueColor: "text-zinc-400",
-  },
-  {
-    icon: Zap,
-    title: "AniSkip Auto-Skip",
-    desc: "Queries opening and ending timestamps in real-time with visual timeline markers and optional auto-skip.",
-    key: "aniskip.timestamps",
-    value: "OP & ED sync",
-    valueColor: "text-amber-400/90",
-  },
-  {
-    icon: Radio,
-    title: "Sub / Dub Dual Audio",
-    desc: "Switch between original Japanese audio with stylized subtitles and English dubs with zero buffer.",
-    key: "audio.track",
-    value: "instant toggle",
-    valueColor: "text-zinc-400",
-  },
-  {
-    icon: Sliders,
-    title: "shad-renew Player",
-    desc: "Liquid-glass dark minimalist UI with custom subtitle typography, 200% Web Audio booster, and speed rates.",
-    key: "player.ui",
-    value: "HLS.js adaptive",
-    valueColor: "text-zinc-400",
-  },
-  {
-    icon: Terminal,
-    title: "postMessage Telemetry",
-    desc: "Stream live playback events (time, play, pause, complete) to your parent site and send remote control commands.",
-    key: "event.bridge",
-    value: "two-way JSON sync",
-    valueColor: "text-sky-400",
-  },
+const QUALITY_OPTIONS = [
+  { id: "0", name: "Best" },
+  { id: "1080", name: "1080p" },
+  { id: "720", name: "720p" },
+  { id: "480", name: "480p" },
+];
+
+const EASE = [0.16, 1, 0.3, 1] as const;
+
+const FEATURES: [string, string, string][] = [
+  ["Five servers, one URL", "Flow, Kitty, Yuri, Zuri and Buzz behind a single route. If one source is down the API moves on to the next.", "server="],
+  ["AniList and MAL IDs", "Address an anime by either database. IDs are cross-mapped and titles matched on the server.", "/ani · /mal"],
+  ["Episode downloads", "Segments are fetched in parallel, decrypted and remuxed into a single MP4 with the audio track you asked for.", "/api/download"],
+  ["Direct HLS", "A plain .m3u8 for hls.js, VLC, mpv, AVPlayer or ExoPlayer when you bring your own player.", "/meu8"],
+  ["Intro and outro skip", "OP/ED timestamps from Re:ANIME and AniSkip, marked on the timeline and skipped automatically.", "autoskipIntro"],
+  ["Real dubs only", "Providers that silently fall back to Japanese audio are dropped from the dub list.", "audio=dub"],
+  ["postMessage bridge", "Progress, pause and end events go to the parent page; play, seek and volume commands come back.", "aniembed"],
 ];
 
 const FAQS = [
   {
-    q: "How do I embed the AniFlow video player into my website?",
-    a: "Embedding AniFlow is as simple as inserting a standard HTML <iframe> element into your page or React component. Simply specify the database source ('ani' for AniList or 'mal' for MyAnimeList), the anime ID, episode number, and audio format ('sub' or 'dub'). For example: <iframe src=\"https://api.aniflow.cc/embed/ani/16498/1/sub\" allow=\"autoplay; fullscreen; picture-in-picture\" className=\"w-full aspect-video border-0 rounded-xl\" />.",
+    q: "How do I embed the player?",
+    a: "Add an <iframe> pointing at /embed/{ani|mal}/{id}/{episode}/{audio} with allow=\"autoplay; fullscreen; picture-in-picture\". That's the whole integration.",
   },
   {
-    q: "Does AniFlow API support both AniList and MyAnimeList (MAL) IDs?",
-    a: "Yes! AniFlow natively supports both AniList IDs (/embed/ani/:id/:ep/:audio) and MyAnimeList IDs (/embed/mal/:id/:ep/:audio). The backend automatically translates IDs, queries episode lists, matches romanized and English titles, and resolves streaming links without any manual configuration on your side.",
+    q: "How do episode downloads work?",
+    a: "Request /api/download/ani/{anilistId}/{episode}/{audio} and the API streams back one MP4. Choose the source with ?server= and cap resolution with ?quality=720. A 24-minute 1080p episode is about 0.5–1 GB and usually takes one to two minutes.",
   },
   {
-    q: "How does the multi-server stream route engine work?",
-    a: "AniFlow integrates independent streaming providers: Flow & Kitty (our high-speed primary engines), Yuri (specialized anime stream extractor), Zuri (dedicated subbed catalog), and Buzz (Megaplay proxy engine). Users can manually switch servers inside the player, or the API will automatically failover if an upstream source is down.",
+    q: "Why does a download need ffmpeg?",
+    a: "Flow and Kitty deliver audio as a separate track, so it has to be merged with the video. ffmpeg only copies streams (no re-encoding). Without it on the host, Buzz and Yuri still download as .ts files.",
   },
   {
-    q: "How does automatic intro and outro skipping work with AniSkip?",
-    a: "AniFlow queries the AniSkip database in real time to fetch exact millisecond timestamps for opening (OP) and ending (ED) sequences. The player visually highlights these segments in orange on the timeline scrubber and provides an 'Auto-Skip' toggle button to jump directly past the intro seamlessly.",
+    q: "Which IDs can I use?",
+    a: "AniList and MyAnimeList. Every route — embed, m3u8 and download — has an /ani and a /mal variant.",
   },
   {
-    q: "Can I synchronize watch time and receive playback events in my app?",
-    a: "Yes. AniFlow features a bidirectional HTML5 postMessage bridge. The embedded player streams telemetry events (such as 'aniflow:time' with current playback seconds, 'aniflow:play', 'aniflow:pause', and 'aniflow:complete') to your parent website. You can also send commands to pause, play, or seek remotely.",
-  },
-  {
-    q: "Is AniFlow API open-source and ready for production deployment?",
-    a: "Yes, AniFlow is fully open-source under the MIT license, built with Next.js 14, TypeScript, Tailwind CSS, and HLS.js. It comes pre-configured with edge proxying, CORS headers, Dockerfile support, and production-ready metadata for immediate global deployment.",
+    q: "Can I self-host it?",
+    a: "Yes. It's an MIT-licensed Next.js 14 app with CORS headers and stream proxying already set up.",
   },
 ];
 
-export default function HomePage() {
-  // Playground state matching screenshot defaults
-  const [embedType, setEmbedType] = useState<"ani" | "mal">("ani");
-  const [animeId, setAnimeId] = useState<string>("16498"); // Attack on Titan
-  const [episode, setEpisode] = useState<string>("1");
-  const [audio, setAudio] = useState<"sub" | "dub">("dub");
-  const [server, setServer] = useState<string>("flow");
-  const [startAt, setStartAt] = useState<string>("0");
-  const [autoskipIntro, setAutoskipIntro] = useState<boolean>(true);
-  const [autoskipOutro, setAutoskipOutro] = useState<boolean>(true);
-  const [copiedType, setCopiedType] = useState<string | null>(null);
+const STATUS_ROWS = ["API", "Downloads", "Flow", "Kitty", "Yuri", "Zuri", "Buzz", "Edge CDN"];
 
-  // FAQ accordion state
-  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+interface MediaInfo {
+  title: string;
+  banner: string | null;
+  cover: string | null;
+  episodes: number | null;
+  meta: string;
+  description: string;
+  genres: string[];
+}
 
-  // Custom dropdown open state
-  const [openDropdown, setOpenDropdown] = useState<"database" | "audio" | "server" | null>(null);
+const mediaCache = new Map<string, MediaInfo>();
 
-  // Close dropdown on outside click
+/* ───────────── Building blocks ───────────── */
+
+const TOKEN_RE =
+  /(\/\/[^\n]*)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(const|let|function|return|await|async|if|new|export|import|from)\b|\b(\d+(?:\.\d+)?)\b/g;
+
+function highlight(code: string) {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(code))) {
+    if (m.index > last) out.push(code.slice(last, m.index));
+    const cls = m[1] ? "text-zinc-500" : m[2] ? "text-[#a8d4b0]" : m[3] ? "text-zinc-400" : "text-[#e8c48a]";
+    out.push(
+      <span key={m.index} className={cls}>
+        {m[0]}
+      </span>
+    );
+    last = m.index + m[0].length;
+  }
+  out.push(code.slice(last));
+  return out;
+}
+
+function CopyButton({ text, label = "Copy", className }: { text: string; label?: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard?.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      }}
+      className={cn(
+        "glass-btn h-8 px-3 rounded-full text-[12px] font-medium text-zinc-200 hover:text-white flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95",
+        className
+      )}
+    >
+      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+function CodeBlock({ title, code, className }: { title: string; code: string; className?: string }) {
+  return (
+    <div className={cn("glass-inset rounded-2xl overflow-hidden flex flex-col min-h-0", className)}>
+      <div className="h-11 pl-4 pr-1.5 flex items-center justify-between border-b border-white/[0.06]">
+        <span className="text-[12px] font-mono text-zinc-400">{title}</span>
+        <CopyButton text={code} />
+      </div>
+      <pre className="flex-1 min-h-0 p-4 text-[12.5px] leading-[1.7] font-mono text-zinc-200 overflow-auto custom-scrollbar">
+        {highlight(code)}
+      </pre>
+    </div>
+  );
+}
+
+function Segmented({
+  value,
+  options,
+  onChange,
+  layoutId,
+  size = "md",
+}: {
+  value: string;
+  options: { id: string; name: string }[];
+  onChange: (id: string) => void;
+  layoutId: string;
+  size?: "md" | "sm";
+}) {
+  return (
+    <div className="glass-inset inline-flex p-[3px] rounded-full">
+      {options.map((opt) => {
+        const active = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => onChange(opt.id)}
+            className={cn(
+              "relative rounded-full font-medium cursor-pointer select-none",
+              size === "md" ? "h-8 px-3.5 text-[13px]" : "h-7 px-3 text-[12px]"
+            )}
+          >
+            {active && (
+              <motion.span
+                layoutId={layoutId}
+                className="absolute inset-0 rounded-full bg-white/[0.16] shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]"
+                transition={{ type: "spring", stiffness: 500, damping: 38 }}
+              />
+            )}
+            <span className={cn("relative transition-colors", active ? "text-white" : "text-zinc-400 hover:text-zinc-200")}>
+              {opt.name}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ServerSelect({ value, audio, onChange }: { value: string; audio: string; onChange: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => setMounted(true), []);
+
   useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent | TouchEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest("[data-dropdown-container]")) {
-        setOpenDropdown(null);
-      }
+    if (!open) return;
+    const place = () => {
+      const r = buttonRef.current?.getBoundingClientRect();
+      if (r) setAnchor({ top: r.bottom + 8, right: document.documentElement.clientWidth - r.right });
     };
-    if (openDropdown) {
-      document.addEventListener("mousedown", handleOutsideClick);
-      document.addEventListener("touchstart", handleOutsideClick);
-      return () => {
-        document.removeEventListener("mousedown", handleOutsideClick);
-        document.removeEventListener("touchstart", handleOutsideClick);
-      };
-    }
-  }, [openDropdown]);
-
-  // Ensure sub-only servers (like Zuri) are never selected when in Dub mode
-  useEffect(() => {
-    if (audio === "dub") {
-      const cur = SERVER_OPTIONS.find((o) => o.id === server);
-      if (cur?.subOnly) {
-        setServer("flow");
-      }
-    }
-  }, [audio, server]);
-
-  // Documentation state
-  const [activeDocTab, setActiveDocTab] = useState<DocTab>("endpoints");
-
-  // System status state
-  const [isRefreshingStatus, setIsRefreshingStatus] = useState<boolean>(false);
-  const [statusLastCheckTime, setStatusLastCheckTime] = useState<string>("");
-  const [isMounted, setIsMounted] = useState<boolean>(false);
-
-  // Live PostMessage Event Logger
-  const [eventLogs, setEventLogs] = useState<Array<{ time: string; type: string; payload: any }>>([]);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-
-  // Dynamic host origin detection for frontend (defaults to production URL for seamless SSR hydration)
-  const [origin, setOrigin] = useState<string>("https://api.aniflow.cc");
-  const [domain, setDomain] = useState<string>("api.aniflow.cc");
-
-  useEffect(() => {
-    setIsMounted(true);
-    if (typeof window !== "undefined") {
-      setOrigin(window.location.origin);
-      setDomain(window.location.host);
-      setStatusLastCheckTime(new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true }));
-    }
-  }, []);
-
-  const currentOrigin = origin;
-  const currentDomain = domain;
-
-  const handleRefreshStatus = () => {
-    setIsRefreshingStatus(true);
-    setTimeout(() => {
-      setStatusLastCheckTime(new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true }));
-      setIsRefreshingStatus(false);
-    }, 600);
-  };
-
-  const [docTabHeight, setDocTabHeight] = useState<number | undefined>(undefined);
-  const docTabContentRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!docTabContentRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.contentRect.height > 0) {
-          setDocTabHeight(entry.contentRect.height);
-        }
-      }
-    });
-    observer.observe(docTabContentRef.current);
-    return () => observer.disconnect();
-  }, []);
-
-  const scrollToSection = (id: string, tab?: DocTab) => {
-    if (typeof window === "undefined") return;
-    if (tab) {
-      setActiveDocTab(tab);
-    }
-    const element = document.getElementById(id);
-    if (!element) return;
-
-    const navOffset = 68;
-    const elementPosition = element.getBoundingClientRect().top;
-    const offsetPosition = elementPosition + window.pageYOffset - navOffset;
-
-    window.scrollTo({
-      top: offsetPosition,
-      behavior: "smooth",
-    });
-
-    window.history.pushState(null, "", `#${id}`);
-  };
-
-  const scrollToTop = () => {
-    if (typeof window === "undefined") return;
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
-    window.history.pushState(null, "", window.location.pathname);
-  };
-
-  // Compute embed URL
-  const embedPath = `/embed/${embedType}/${animeId || "154587"}/${episode || "1"}/${audio}`;
-  const queryParams = new URLSearchParams();
-  if (server && server !== "flow" && server !== "flow1") queryParams.set("server", server);
-  if (startAt && parseFloat(startAt) > 0) queryParams.set("startAt", startAt);
-  if (!autoskipIntro) queryParams.set("autoskipIntro", "0");
-  if (!autoskipOutro) queryParams.set("autoskipOutro", "0");
-
-  const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
-  const fullEmbedUrl = `${currentOrigin}${embedPath}${queryString}`;
-  const iframeCode = `<iframe\n  src="${fullEmbedUrl}"\n  width="100%"\n  height="500"\n  frameborder="0"\n  allowfullscreen\n  allow="autoplay; fullscreen; picture-in-picture"\n></iframe>`;
-
-  // Listen for real postMessage from preview iframe
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (!data) return;
-
-      const now = new Date().toLocaleTimeString();
-
-      if (data?.type === "PLAYER_EVENT") {
-        setEventLogs((prev) => [
-          { time: now, type: `PLAYER_EVENT (${data.data?.type || "update"})`, payload: data.data },
-          ...prev.slice(0, 24),
-        ]);
-      } else if (data?.type === "watching-log") {
-        setEventLogs((prev) => [
-          { time: now, type: "watching-log", payload: data },
-          ...prev.slice(0, 24),
-        ]);
-      } else if (data?.type === "aniflow-error" || data?.type === "STREAM_UNAVAILABLE") {
-        setEventLogs((prev) => [
-          { time: now, type: data.type, payload: data },
-          ...prev.slice(0, 24),
-        ]);
-      }
+    const close = (e: MouseEvent | TouchEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-server-select]")) setOpen(false);
     };
-
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
-
-  // Send command to iframe
-  const sendIframeCommand = (cmd: string, extra: any = {}) => {
-    if (iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.postMessage({ command: cmd, ...extra }, "*");
-    }
-  };
-
-  const handleCopy = (text: string, type: string) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 2000);
-    }
-  };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("touchstart", close);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("touchstart", close);
+    };
+  }, [open]);
 
   return (
-    <div className="min-h-screen bg-[#000000] text-white font-product-sans selection:bg-white/20 relative isolate overflow-x-hidden w-full max-w-full">
-      {/* Stationary Page Background Gradients & Micro-Dither Noise */}
-      <div className="absolute inset-0 -z-10 pointer-events-none overflow-hidden select-none">
-        {/* Top ambient illumination for Hero */}
-        <div
-          className="absolute top-0 left-1/2 -translate-x-1/2 w-[1200px] h-[650px]"
-          style={{
-            background:
-              "radial-gradient(ellipse 70% 55% at 50% 0%, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.04) 30%, rgba(255, 255, 255, 0.01) 60%, transparent 100%)",
-          }}
-        />
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-server-select
+        onClick={() => setOpen(!open)}
+        className="glass-btn h-9 pl-3.5 pr-2.5 rounded-full text-[13px] font-medium text-white flex items-center gap-1.5 cursor-pointer"
+      >
+        {SERVER_OPTIONS.find((o) => o.id === value)?.name}
+        <ChevronDown className={cn("w-4 h-4 text-zinc-400 transition-transform", open && "rotate-180")} />
+      </button>
+      {/* Portaled to <body>: inside the glass card the card's own backdrop-filter would
+          stop this menu from blurring anything outside the card */}
+      {mounted &&
+        createPortal(
+          <AnimatePresence>
+            {open && anchor && (
+          <motion.div
+            data-server-select
+            initial={{ opacity: 0, y: -4, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.16, ease: EASE }}
+            style={{ top: anchor.top, right: anchor.right }}
+            className="glass-menu fixed w-48 rounded-2xl p-1 z-[60] origin-top-right"
+          >
+            {SERVER_OPTIONS.map((opt) => {
+              const disabled = Boolean(opt.subOnly && audio === "dub");
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    onChange(opt.id);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "w-full flex items-center justify-between px-3 h-9 text-[13px] rounded-xl transition-colors",
+                    disabled
+                      ? "text-zinc-500 cursor-not-allowed"
+                      : value === opt.id
+                      ? "bg-white/[0.12] text-white cursor-pointer"
+                      : "text-zinc-200 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                  )}
+                >
+                  {opt.name}
+                  {disabled ? <span className="text-[11px]">sub only</span> : value === opt.id && <Check className="w-4 h-4" />}
+                </button>
+              );
+            })}
+          </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
+    </>
+  );
+}
 
-        {/* Global smooth vertical ambient tone so page is never empty */}
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.015) 65%, rgba(255, 255, 255, 0) 100%)",
-          }}
-        />
+function Endpoint({ method = "GET", path, desc, example }: { method?: string; path: string; desc: string; example: string }) {
+  return (
+    <div className="py-5 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-x-6 gap-y-2 items-start">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2.5 font-mono text-[13px] min-w-0">
+          <span className="text-[10px] font-semibold tracking-wider text-zinc-500">{method}</span>
+          <span className="text-white truncate">{path}</span>
+        </div>
+        <p className="text-[14px] text-zinc-400 mt-1.5 leading-relaxed max-w-2xl">{desc}</p>
+      </div>
+      <CopyButton text={example} label="Copy URL" className="md:mt-0.5 self-start" />
+    </div>
+  );
+}
 
-        {/* Velvety micro-dither noise overlay - eliminates 8-bit banding and contour rings */}
+const tabMotion = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -6 },
+  transition: { duration: 0.2, ease: EASE },
+};
+
+/* ───────────── Page ───────────── */
+
+export default function HomePage() {
+  const [embedType, setEmbedType] = useState<"ani" | "mal">("ani");
+  const [animeId, setAnimeId] = useState("16498");
+  const [episode, setEpisode] = useState(1);
+  const [audio, setAudio] = useState<"sub" | "dub">("sub");
+  const [server, setServer] = useState("flow");
+  const [quality, setQuality] = useState("0");
+  const [media, setMedia] = useState<MediaInfo | null>(null);
+  const [downloadStarting, setDownloadStarting] = useState(false);
+  const [downloadHint, setDownloadHint] = useState(false);
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const [activeDocTab, setActiveDocTab] = useState<DocTab>("endpoints");
+  const [origin, setOrigin] = useState("https://api.aniflow.cc");
+  const [checkedAt, setCheckedAt] = useState("");
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+    setCheckedAt(new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
+  }, []);
+
+  // Sub-only servers (Zuri) can't serve a dub
+  useEffect(() => {
+    if (audio === "dub" && SERVER_OPTIONS.find((o) => o.id === server)?.subOnly) setServer("flow");
+  }, [audio, server]);
+
+  // Title, artwork and episode count for the selected anime; the artwork is what the glass refracts
+  useEffect(() => {
+    const id = parseInt(animeId, 10);
+    if (!id) return;
+    const cacheKey = `${embedType}:${id}`;
+    const cached = mediaCache.get(cacheKey);
+    if (cached) {
+      setMedia(cached);
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(async () => {
+      // AniList answers 429 when an IP is busy; retry a few times and keep the current
+      // details on failure rather than flashing "Unknown title"
+      for (let attempt = 0; attempt < 4 && !ctrl.signal.aborted; attempt++) {
+        try {
+          const res = await fetch("https://graphql.anilist.co", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              query: `query ($id: Int, $mal: Int) { Media(id: $id, idMal: $mal, type: ANIME) {
+                title { english romaji } bannerImage coverImage { extraLarge } episodes format seasonYear
+                description(asHtml: false) genres } }`,
+              variables: embedType === "ani" ? { id } : { mal: id },
+            }),
+          });
+          if (res.status === 429 || res.status >= 500) {
+            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+            continue;
+          }
+          const m = (await res.json())?.data?.Media;
+          if (!m) return setMedia(null);
+          const info: MediaInfo = {
+            title: m.title.english || m.title.romaji,
+            banner: m.bannerImage || m.coverImage?.extraLarge || null,
+            cover: m.coverImage?.extraLarge || null,
+            episodes: m.episodes || null,
+            meta: [m.format?.replace("_", " "), m.seasonYear, m.episodes ? `${m.episodes} episodes` : null].filter(Boolean).join(" · "),
+            description: (m.description || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+            genres: (m.genres || []).slice(0, 3),
+          };
+          mediaCache.set(cacheKey, info);
+          return setMedia(info);
+        } catch {
+          return;
+        }
+      }
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [animeId, embedType]);
+
+  useEffect(() => {
+    setDownloadHint(false);
+  }, [embedType, animeId, episode, audio, server, quality]);
+
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 80, behavior: "smooth" });
+  };
+
+  const safeId = animeId || "16498";
+  const maxEp = media?.episodes || 9999;
+
+  const embedQs = server !== "flow" ? `?server=${server}` : "";
+  const embedPath = `/embed/${embedType}/${safeId}/${episode}/${audio}${embedQs}`;
+  const fullEmbedUrl = `${origin}${embedPath}`;
+
+  const dlQuery = new URLSearchParams({ server });
+  if (quality !== "0") dlQuery.set("quality", quality);
+  const downloadPath = `/api/download/${embedType}/${safeId}/${episode}/${audio}?${dlQuery}`;
+
+  const startDownload = () => {
+    setDownloadStarting(true);
+    setDownloadHint(true);
+    setTimeout(() => setDownloadStarting(false), 6000);
+  };
+
+  const htmlSnippet = `<iframe
+  src="${origin}/embed/ani/16498/1/sub"
+  style="width: 100%; aspect-ratio: 16 / 9; border: 0;"
+  allow="autoplay; fullscreen; picture-in-picture"
+  allowfullscreen
+></iframe>`;
+
+  const reactSnippet = `export function AnimePlayer({ anilistId, episode = 1, audio = "sub" }) {
+  return (
+    <iframe
+      src={\`${origin}/embed/ani/\${anilistId}/\${episode}/\${audio}\`}
+      className="aspect-video w-full border-0"
+      allow="autoplay; fullscreen; picture-in-picture"
+      allowFullScreen
+    />
+  );
+}`;
+
+  const downloadSnippet = `# whole episode as MP4, filename taken from the response
+curl -OJ "${origin}/api/download/ani/16498/1/sub?server=flow"
+
+# 720p, English dub, by MyAnimeList ID
+curl -OJ "${origin}/api/download/mal/16498/1/dub?quality=720"`;
+
+  const sdkSnippet = `const player = document.querySelector("#anime-player");
+const playerOrigin = new URL(player.src).origin;
+const pending = new Map();
+
+window.addEventListener("message", (event) => {
+  const message = event.data;
+  if (event.source !== player.contentWindow || message?.source !== "aniembed") return;
+
+  if (message.name === "command-result" && message.requestId) {
+    const request = pending.get(message.requestId);
+    pending.delete(message.requestId);
+    message.data.ok ? request?.resolve(message.data.state) : request?.reject(message.data.error);
+  }
+
+  if (["progress", "pause", "ended"].includes(message.name)) {
+    saveWatchHistory(message.data);
+  }
+});
+
+function sendCommand(name, data = {}) {
+  const requestId = crypto.randomUUID();
+  player.contentWindow?.postMessage(
+    { source: "aniembed", version: 1, type: "command", name, requestId, data },
+    playerOrigin
+  );
+  return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+}
+
+await sendCommand("seek", { time: 145 });`;
+
+  return (
+    <div className="lg-canvas min-h-screen text-zinc-100 font-product-sans relative isolate overflow-x-clip">
+      {/* Backdrop: the selected anime's key art, heavily blurred, fading into the page */}
+      <div className="absolute inset-x-0 top-0 h-[1100px] -z-10 pointer-events-none overflow-hidden" aria-hidden>
+        <AnimatePresence>
+          {media?.banner && (
+            <motion.div
+              key={media.banner}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.55 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 1.2 }}
+              className="absolute -inset-20 bg-cover bg-center"
+              style={{ backgroundImage: `url(${media.banner})`, filter: "blur(70px) saturate(1.4)" }}
+            />
+          )}
+        </AnimatePresence>
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#0a0a0b]/40 to-[#0a0a0b]" />
         <div
-          className="absolute inset-0 opacity-[0.25] bg-repeat mix-blend-screen"
-          style={{
-            backgroundImage: "url('/noise.png')",
-            backgroundSize: "128px 128px",
-          }}
+          className="absolute inset-0 opacity-[0.12] mix-blend-overlay"
+          style={{ backgroundImage: "url('/noise.png')", backgroundSize: "128px 128px" }}
         />
       </div>
 
-      {/* Top Navbar */}
-      <header className="sticky top-0 z-50 w-full border-b border-white/[0.06] bg-black/20 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            <button
-              type="button"
-              onClick={scrollToTop}
-              className="flex items-center gap-2.5 group cursor-pointer focus:outline-none"
-              aria-label="AniFlow API Home"
+      {/* Nav */}
+      <header className="fixed top-0 inset-x-0 z-50 px-3 sm:px-6 pt-3">
+        <div className="glass glass-nav max-w-6xl mx-auto h-[52px] rounded-full pl-4 pr-1.5 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <img src="/logo.svg" alt="" className="w-6 h-6" />
+            <span className="font-bold text-[15px] tracking-tight text-white">AniFlow API</span>
+          </button>
+          <nav className="hidden md:flex items-center text-[13px] text-zinc-400">
+            {[
+              ["features", "Features"],
+              ["docs", "Docs"],
+              ["faq", "FAQ"],
+              ["status", "Status"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => scrollTo(id)}
+                className="h-9 px-3.5 rounded-full hover:text-white transition-colors cursor-pointer"
+              >
+                {label}
+              </button>
+            ))}
+            <a
+              href="https://github.com/realmichaelstetson/AniFlow-API"
+              target="_blank"
+              rel="noreferrer"
+              className="h-9 px-3.5 rounded-full hover:text-white transition-colors flex items-center"
             >
-              <div className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105 group-hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">
-                <img src="/logo.svg" alt="AniFlow API" className="w-full h-full object-contain" />
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-extrabold text-base sm:text-lg tracking-tight text-white group-hover:text-zinc-200 transition-colors">
-                  AniFlow
-                </span>
-                <span className="text-[10px] sm:text-[11px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/[0.08] text-zinc-300 border border-white/[0.12] group-hover:border-white/30 group-hover:text-white transition-all">
-                  API
-                </span>
-              </div>
-            </button>
-
-            <nav className="hidden md:flex items-center gap-1 text-xs text-zinc-400 font-medium">
-              <button
-                type="button"
-                onClick={() => scrollToSection("features")}
-                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
-              >
-                Features
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection("docs")}
-                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
-              >
-                Documentation
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection("faq")}
-                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
-              >
-                FAQ
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection("status")}
-                className="h-7 px-3 rounded-full hover:text-white hover:bg-white/[0.04] flex items-center transition-all active:scale-95 cursor-pointer"
-              >
-                System Status
-              </button>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => scrollToSection("status")}
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#0C0C0C] hover:bg-[#141414] border border-white/[0.08] hover:border-white/20 text-[11px] font-medium text-emerald-400 transition-all cursor-pointer active:scale-95"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>All Systems Operational</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => scrollToSection("docs", "endpoints")}
-              className="h-7 px-3.5 rounded-full bg-white hover:bg-zinc-200 text-black text-xs font-bold transition-all flex items-center justify-center cursor-pointer shadow-sm active:scale-95 hover:shadow-[0_0_15px_rgba(255,255,255,0.3)]"
-            >
-              Get Embed
-            </button>
-          </div>
+              GitHub
+            </a>
+          </nav>
+          <button
+            type="button"
+            onClick={() => scrollTo("docs")}
+            className="btn-solid h-10 px-4 rounded-full text-[13px] font-semibold cursor-pointer active:scale-95"
+          >
+            Get started
+          </button>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <section className="relative pt-12 pb-16 sm:pt-20 sm:pb-24 overflow-hidden">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 relative">
-          <div className="text-center max-w-3xl mx-auto space-y-4 mb-10">
-            <h1 className="text-3xl sm:text-5xl md:text-6xl font-black tracking-tight text-white leading-tight">
-              Stream Anime on Any Website
-            </h1>
+      {/* Hero */}
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 pt-32 sm:pt-40">
+        <div className="max-w-2xl mx-auto text-center">
+          <h1 className="text-[40px] sm:text-[56px] leading-[1.04] font-bold tracking-[-0.035em] text-white">
+            An anime player
+            <br />
+            for any website.
+          </h1>
+          <p className="mt-5 text-[16px] sm:text-[17px] text-zinc-300/80 leading-relaxed max-w-xl mx-auto">
+            Embed it with one iframe, pull the raw HLS stream, or download an episode as an MP4. AniList and MyAnimeList
+            IDs, five stream servers, sub and dub.
+          </p>
+        </div>
 
-            <p className="text-sm sm:text-base text-zinc-400 max-w-2xl mx-auto leading-relaxed">
-              High-performance AniList and MAL video player embeds. Multi-server streaming, instant Sub/Dub switching, and full postMessage controls.
-            </p>
-
-            {/* Hero Action Buttons with smooth scroll animations */}
-            <div className="flex flex-wrap items-center justify-center gap-3 pt-3">
-              <button
-                type="button"
-                onClick={() => scrollToSection("player-demo")}
-                className="h-8 sm:h-9 px-4 rounded-full bg-white hover:bg-zinc-200 text-black text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer hover:shadow-[0_0_15px_rgba(255,255,255,0.3)]"
-              >
-                <Play className="w-3.5 h-3.5 fill-black" />
-                <span>Interactive Player</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => scrollToSection("docs")}
-                className="h-8 sm:h-9 px-4 rounded-full bg-[#0C0C0C] hover:bg-[#161616] text-zinc-300 hover:text-white border border-white/[0.1] hover:border-white/30 text-xs font-semibold transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
-              >
-                <Code2 className="w-3.5 h-3.5 text-zinc-400" />
-                <span>Explore Documentation</span>
-                <ArrowDown className="w-3.5 h-3.5 text-zinc-400" />
-              </button>
+        {/* Playground: anime details and controls on the left, the live embed on the right */}
+        <div
+          id="player-demo"
+          className="glass rounded-[30px] p-2 sm:p-2.5 mt-10 sm:mt-12 grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-2.5"
+        >
+          <aside className="flex flex-col gap-5 p-3 sm:p-4 min-w-0">
+            <div className="flex gap-4">
+              <div className="w-[72px] h-[102px] rounded-xl overflow-hidden bg-white/5 shrink-0 ring-1 ring-white/10 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.7)]">
+                {media?.cover && <img src={media.cover} alt="" className="w-full h-full object-cover" />}
+              </div>
+              <div className="min-w-0 pt-0.5">
+                <h2 className="text-[17px] leading-snug font-semibold text-white line-clamp-2">{media?.title || "Unknown title"}</h2>
+                <p className="text-[12px] text-zinc-400 mt-1">{media?.meta}</p>
+                {media?.genres.length ? (
+                  <div className="flex flex-wrap gap-1 mt-2.5">
+                    {media.genres.map((g) => (
+                      <span key={g} className="h-5 px-2 rounded-full bg-white/[0.07] text-[10.5px] text-zinc-300 flex items-center">
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
-          </div>
 
-          <div id="player-demo" className="max-w-4xl mx-auto scroll-mt-20">
-            {/* Quick config controls directly above player */}
-            <div className="mb-4">
-              <p className="text-center text-xs text-zinc-400 mb-3.5 max-w-xl mx-auto leading-relaxed px-2 font-product-sans">
-                Test live embedding parameters: customize database identifier, episode, audio track, and stream server engine below.
+            {media?.description && (
+              <p className="text-[13px] leading-relaxed text-zinc-400 line-clamp-3" title={media.description}>
+                {media.description}
               </p>
+            )}
 
-              {/* Responsive 2-col on mobile, single row on desktop */}
-              <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-end justify-center gap-2 sm:gap-2.5 max-w-xl mx-auto sm:max-w-none">
-                {/* 1. Database Selector */}
-                <div
-                  className={cn("col-span-1 sm:w-36 flex flex-col gap-1 relative", openDropdown === "database" && "z-30")}
-                  data-dropdown-container
-                >
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
-                    Database
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setOpenDropdown(openDropdown === "database" ? null : "database")}
-                    className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
-                      openDropdown === "database"
-                        ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
-                        : "border-white/[0.08] hover:border-white/20"
-                    )}
-                  >
-                    <span className="truncate">{DATABASE_OPTIONS.find((o) => o.id === embedType)?.name || "AniList"}</span>
-                    <ChevronDown
-                      className={cn(
-                        "w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200",
-                        openDropdown === "database" && "rotate-180 text-white"
-                      )}
-                    />
-                  </button>
-
-                  <AnimatePresence>
-                    {openDropdown === "database" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 4, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 3, scale: 0.98 }}
-                        transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
-                        style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.82)",
-                          backdropFilter: "blur(20px)",
-                          WebkitBackdropFilter: "blur(20px)",
-                        }}
-                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans origin-top"
-                      >
-                        {DATABASE_OPTIONS.map((opt) => {
-                          const isSelected = embedType === opt.id;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => {
-                                setEmbedType(opt.id);
-                                setOpenDropdown(null);
-                              }}
-                              className={cn(
-                                "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
-                                isSelected
-                                  ? "bg-white/[0.08] text-white"
-                                  : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
-                              )}
-                            >
-                              <span>{opt.name}</span>
-                              {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
-                            </button>
-                          );
-                        })}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* 2. Audio Selector Dropdown */}
-                <div
-                  className={cn("col-span-1 sm:w-36 flex flex-col gap-1 relative", openDropdown === "audio" && "z-30")}
-                  data-dropdown-container
-                >
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
-                    Audio Track
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setOpenDropdown(openDropdown === "audio" ? null : "audio")}
-                    className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
-                      openDropdown === "audio"
-                        ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
-                        : "border-white/[0.08] hover:border-white/20"
-                    )}
-                  >
-                    <span>{audio === "dub" ? "Dub" : "Sub"}</span>
-                    <ChevronDown
-                      className={cn(
-                        "w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200",
-                        openDropdown === "audio" && "rotate-180 text-white"
-                      )}
-                    />
-                  </button>
-
-                  <AnimatePresence>
-                    {openDropdown === "audio" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 4, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 3, scale: 0.98 }}
-                        transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
-                        style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.82)",
-                          backdropFilter: "blur(20px)",
-                          WebkitBackdropFilter: "blur(20px)",
-                        }}
-                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans origin-top"
-                      >
-                        {AUDIO_OPTIONS.map((opt) => {
-                          const isSelected = audio === opt.id;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => {
-                                const val = opt.id;
-                                setAudio(val);
-                                if (val === "dub") {
-                                  const cur = SERVER_OPTIONS.find((o) => o.id === server);
-                                  if (cur?.subOnly) {
-                                    setServer("flow");
-                                  }
-                                }
-                                setOpenDropdown(null);
-                              }}
-                              className={cn(
-                                "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
-                                isSelected
-                                  ? "bg-white/[0.08] text-white"
-                                  : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
-                              )}
-                            >
-                              <span>{opt.name}</span>
-                              {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
-                            </button>
-                          );
-                        })}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* 3. Server Selector Dropdown */}
-                <div
-                  className={cn("col-span-1 sm:w-44 flex flex-col gap-1 relative", openDropdown === "server" && "z-30")}
-                  data-dropdown-container
-                >
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
-                    Server
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setOpenDropdown(openDropdown === "server" ? null : "server")}
-                    className={cn(
-                      "h-9 px-3.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] active:bg-[#181818] border text-xs font-semibold text-white flex items-center justify-between gap-2 transition-all shadow-sm active:scale-[0.98] cursor-pointer w-full font-product-sans",
-                      openDropdown === "server"
-                        ? "border-white/30 ring-1 ring-white/10 bg-[#161616]"
-                        : "border-white/[0.08] hover:border-white/20"
-                    )}
-                  >
-                    <span className="truncate">
-                      {SERVER_OPTIONS.find((o) => o.id === server)?.name || "Flow"}
-                    </span>
-                    <ChevronDown
-                      className={cn(
-                        "w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200",
-                        openDropdown === "server" && "rotate-180 text-white"
-                      )}
-                    />
-                  </button>
-
-                  <AnimatePresence>
-                    {openDropdown === "server" && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 4, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 3, scale: 0.98 }}
-                        transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
-                        style={{
-                          backgroundColor: "rgba(12, 12, 12, 0.82)",
-                          backdropFilter: "blur(20px)",
-                          WebkitBackdropFilter: "blur(20px)",
-                        }}
-                        className="absolute top-full mt-1.5 left-0 right-0 rounded-xl border border-white/[0.1] p-1 shadow-2xl shadow-black/90 z-50 font-product-sans max-h-72 overflow-y-auto player-menu-scrollbar origin-top"
-                      >
-                        {SERVER_OPTIONS
-                          .filter((opt) => !(opt.subOnly && audio === "dub"))
-                          .map((opt) => {
-                            const isSelected = server === opt.id;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={() => {
-                                  setServer(opt.id);
-                                  setOpenDropdown(null);
-                                }}
-                                className={cn(
-                                  "w-full flex items-center justify-between gap-2.5 px-3 py-2 text-xs rounded-lg font-medium font-product-sans transition-colors cursor-pointer",
-                                  isSelected
-                                    ? "bg-white/[0.08] text-white"
-                                    : "text-zinc-400 hover:text-white hover:bg-white/[0.04]"
-                                )}
-                              >
-                                <span className="truncate">{opt.name}</span>
-                                {isSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
-                              </button>
-                            );
-                          })}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* 4. Anime ID & Episode Inputs */}
-                <div className="col-span-1 sm:w-auto flex items-end gap-1.5 min-w-0">
-                  {/* Anime ID Input */}
-                  <div className="flex-1 min-w-0 sm:w-28 flex flex-col gap-1">
-                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
-                      Anime ID
-                    </span>
-                    <input
-                      type="text"
-                      value={animeId}
-                      onChange={(e) => setAnimeId(e.target.value.trim())}
-                      placeholder="16498"
-                      className="h-9 w-full sm:w-28 px-2.5 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] border border-white/[0.08] hover:border-white/20 focus:border-white/40 focus:ring-1 focus:ring-white/20 text-xs font-semibold text-white text-center focus:outline-none transition-all font-mono shadow-sm"
-                    />
-                  </div>
-
-                  {/* Episode Input */}
-                  <div className="w-14 xs:w-16 sm:w-18 shrink-0 flex flex-col gap-1">
-                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 pl-0.5">
-                      Episode
-                    </span>
-                    <input
-                      type="number"
-                      min="1"
-                      value={episode}
-                      onChange={(e) => setEpisode(e.target.value)}
-                      placeholder="1"
-                      className="h-9 w-full px-2 rounded-xl bg-[#0C0C0C] hover:bg-[#141414] border border-white/[0.08] hover:border-white/20 focus:border-white/40 focus:ring-1 focus:ring-white/20 text-xs font-semibold text-white text-center focus:outline-none transition-all font-mono shadow-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Player Viewport */}
-            <div className="flex flex-col rounded-xl overflow-hidden bg-black border border-white/[0.08] shadow-2xl">
-              <div className="h-8 px-3 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between text-[11px] text-zinc-400 gap-2">
-                <div className="flex items-center gap-2 min-w-0 truncate">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                  <span className="font-mono truncate">{embedPath}{queryString}</span>
-                </div>
-                <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(fullEmbedUrl, "hero-url")}
-                    className="hover:text-white flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
-                  >
-                    {copiedType === "hero-url" ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedType === "hero-url" ? "Copied" : "Copy"}</span>
-                  </button>
-                  <a
-                    href={fullEmbedUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-white flex items-center gap-1 shrink-0 transition-colors"
-                  >
-                    <span className="hidden sm:inline">Full window</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-              </div>
-
-              <div className="relative aspect-video w-full bg-black">
-                <iframe
-                  ref={iframeRef}
-                  src={fullEmbedUrl}
-                  className="w-full h-full border-0"
-                  allow="autoplay; fullscreen; picture-in-picture"
+            <div className="border-t border-white/[0.07] pt-4 flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-zinc-400">Database</span>
+                <Segmented
+                  size="sm"
+                  value={embedType}
+                  options={[
+                    { id: "ani", name: "AniList" },
+                    { id: "mal", name: "MAL" },
+                  ]}
+                  onChange={(id) => setEmbedType(id as "ani" | "mal")}
+                  layoutId="seg-db"
                 />
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
 
-      {/* ARCHITECTURE & FEATURES SECTION */}
-      <section
-        id="features"
-        className="py-16 sm:py-20 border-t border-white/[0.06] relative scroll-mt-20"
-      >
-        <div className="max-w-5xl mx-auto px-4 sm:px-6">
-          <div className="text-center max-w-2xl mx-auto mb-10">
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
-              Architecture & Features
-            </h2>
-            <p className="text-xs sm:text-sm text-zinc-400">
-              Low-latency edge delivery, automated stream failover, and full host control.
-            </p>
-          </div>
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-zinc-400">Anime ID</span>
+                <input
+                  value={animeId}
+                  onChange={(e) => setAnimeId(e.target.value.replace(/\D/g, "").slice(0, 7))}
+                  inputMode="numeric"
+                  placeholder="16498"
+                  className="glass-inset w-[108px] h-9 px-3.5 rounded-full text-[13px] font-mono text-white text-right placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-white/25"
+                />
+              </label>
 
-          <div className="rounded-2xl border border-white/[0.08] bg-[#030303] overflow-hidden shadow-2xl">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/[0.06]">
-              {ARCHITECTURE_FEATURES.slice(0, 3).map((feat, idx) => {
-                const Icon = feat.icon;
-                return (
-                  <div
-                    key={idx}
-                    className="p-5 sm:p-6 flex flex-col justify-between hover:bg-white/[0.02] transition-colors group"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2.5 mb-2.5">
-                        <div className="w-7 h-7 rounded-lg bg-[#0C0C0C] border border-white/[0.08] flex items-center justify-center text-zinc-400 group-hover:text-white group-hover:border-white/20 transition-colors">
-                          <Icon className="w-3.5 h-3.5" />
-                        </div>
-                        <h3 className="text-sm font-bold text-white tracking-tight group-hover:text-zinc-200 transition-colors">
-                          {feat.title}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-zinc-400 leading-relaxed font-product-sans">
-                        {feat.desc}
-                      </p>
-                    </div>
-
-                    <div className="mt-5 pt-3 border-t border-white/[0.04] flex items-center justify-between text-[11px] font-mono">
-                      <span className="text-zinc-500">{feat.key}</span>
-                      <span className={feat.valueColor}>{feat.value}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/[0.06] border-t border-white/[0.06]">
-              {ARCHITECTURE_FEATURES.slice(3, 6).map((feat, idx) => {
-                const Icon = feat.icon;
-                return (
-                  <div
-                    key={idx}
-                    className="p-5 sm:p-6 flex flex-col justify-between hover:bg-white/[0.02] transition-colors group"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2.5 mb-2.5">
-                        <div className="w-7 h-7 rounded-lg bg-[#0C0C0C] border border-white/[0.08] flex items-center justify-center text-zinc-400 group-hover:text-white group-hover:border-white/20 transition-colors">
-                          <Icon className="w-3.5 h-3.5" />
-                        </div>
-                        <h3 className="text-sm font-bold text-white tracking-tight group-hover:text-zinc-200 transition-colors">
-                          {feat.title}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-zinc-400 leading-relaxed font-product-sans">
-                        {feat.desc}
-                      </p>
-                    </div>
-
-                    <div className="mt-5 pt-3 border-t border-white/[0.04] flex items-center justify-between text-[11px] font-mono">
-                      <span className="text-zinc-500">{feat.key}</span>
-                      <span className={feat.valueColor}>{feat.value}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* DOCUMENTATION SECTION */}
-      <section
-        id="docs"
-        className="py-16 sm:py-24 scroll-mt-20"
-      >
-        <div className="max-w-5xl mx-auto px-4 sm:px-6">
-          {/* Top Domain Callout */}
-          <div className="text-center mb-3">
-            <span className="text-xs sm:text-sm font-semibold text-rose-400/90 tracking-wide font-mono">
-              Use this domain for embed URLs: <strong className="text-rose-300 font-bold">{currentDomain}</strong>
-            </span>
-          </div>
-
-          {/* Section Heading */}
-          <div className="text-center max-w-2xl mx-auto mb-8">
-            <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-2">
-              Documentation
-            </h2>
-            <p className="text-sm text-zinc-400">
-              Reference for embedding and customizing AniFlow API on your site.
-            </p>
-          </div>
-
-          {/* Segmented Control Navigation Tabs with animated sliding pill */}
-          <div className="w-full flex justify-start sm:justify-center mb-6 sm:mb-8 overflow-x-auto no-scrollbar py-1 px-4 -mx-4 sm:mx-0 sm:px-0">
-            <div className="relative inline-flex p-1 rounded-full bg-[#0C0C0C] border border-white/[0.08] shadow-inner shrink-0 mx-auto">
-              {DOC_TABS.map((tab) => {
-                const Icon = tab.icon;
-                const isActive = activeDocTab === tab.id;
-                return (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-zinc-400">Episode</span>
+                <div className="glass-inset h-9 rounded-full flex items-center px-1">
                   <button
-                    key={tab.id}
                     type="button"
-                    onClick={() => setActiveDocTab(tab.id)}
-                    className="relative h-8 px-3 sm:px-4 rounded-full text-xs font-medium flex items-center justify-center gap-1.5 shrink-0 cursor-pointer select-none focus:outline-none transition-colors active:scale-95"
+                    onClick={() => setEpisode(Math.max(1, episode - 1))}
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-zinc-300 hover:bg-white/10 cursor-pointer disabled:opacity-30"
+                    disabled={episode <= 1}
+                    aria-label="Previous episode"
                   >
-                    {isActive && (
-                      <motion.div
-                        layoutId="activeDocTabPill"
-                        className="absolute inset-0 rounded-full bg-[#181818] border border-white/[0.14] shadow-md"
-                        transition={{ type: "spring", stiffness: 450, damping: 32 }}
-                      />
-                    )}
-                    <span
-                      className={cn(
-                        "relative z-10 flex items-center gap-1.5 transition-colors duration-200",
-                        isActive ? "text-white font-semibold" : "text-zinc-400 hover:text-zinc-200"
-                      )}
-                    >
-                      <Icon className={cn("w-3.5 h-3.5 shrink-0 transition-colors", isActive ? "text-white" : "text-zinc-400")} />
-                      <span>{tab.label}</span>
-                    </span>
+                    <Minus className="w-3.5 h-3.5" />
                   </button>
-                );
-              })}
+                  <span className="w-12 text-center text-[13px] text-white font-medium tabular-nums">
+                    {episode}
+                    {media?.episodes ? <span className="text-zinc-500 font-normal">/{media.episodes}</span> : null}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEpisode(Math.min(maxEp, episode + 1))}
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-zinc-300 hover:bg-white/10 cursor-pointer disabled:opacity-30"
+                    disabled={episode >= maxEp}
+                    aria-label="Next episode"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-zinc-400">Audio</span>
+                <Segmented
+                  size="sm"
+                  value={audio}
+                  options={[
+                    { id: "sub", name: "Sub" },
+                    { id: "dub", name: "Dub" },
+                  ]}
+                  onChange={(id) => setAudio(id as "sub" | "dub")}
+                  layoutId="seg-audio"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[13px] text-zinc-400">Server</span>
+                <ServerSelect value={server} audio={audio} onChange={setServer} />
+              </div>
             </div>
-          </div>
+          </aside>
 
-          {/* Animated Tab Height Container */}
-          <motion.div
-            animate={{ height: docTabHeight ? docTabHeight : "auto" }}
-            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            <div ref={docTabContentRef}>
-              <AnimatePresence mode="wait" initial={false}>
-            {activeDocTab === "endpoints" && (
-              <motion.div
-                key="endpoints"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                className="p-5 sm:p-6 rounded-2xl bg-[#030303] border border-white/[0.08] space-y-4 shadow-2xl"
-              >
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight">API Endpoints</h3>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    Base embed routes for streaming anime with AniList or MyAnimeList identifiers:
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-                  {/* Card 1: AniList Embed */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-white/[0.08] shadow-xl flex flex-col justify-between overflow-hidden">
-                    <div className="flex flex-col flex-1">
-                      {/* Header bar */}
-                      <div className="px-3 sm:px-3.5 py-2.5 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                          <span className="text-xs font-bold text-white tracking-tight truncate">AniList Embed</span>
-                          <span className="text-zinc-600 shrink-0">·</span>
-                          <span className="text-[11px] font-mono text-zinc-400 shrink-0">/embed/ani</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopy(
-                              `${currentOrigin}/embed/ani/{anilistId}/{episode}/{audio}?server=flow`,
-                              "ep-ani"
-                            )
-                          }
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1C1C1C] hover:bg-[#252525] border border-white/[0.1] text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm active:scale-95"
-                        >
-                          {copiedType === "ep-ani" ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>{copiedType === "ep-ani" ? "Copied" : "Copy"}</span>
-                        </button>
-                      </div>
-
-                      {/* URL Box */}
-                      <div className="p-3.5 bg-[#060606] border-b border-white/[0.06] font-mono text-xs text-[#4ade80] overflow-x-auto leading-relaxed select-text custom-scrollbar">
-                        <code>{currentOrigin}/embed/ani/&#123;anilistId&#125;/&#123;episode&#125;/&#123;audio&#125;?server=flow</code>
-                      </div>
-
-                      {/* Content / Info */}
-                      <div className="p-4 space-y-3.5 text-xs flex-1 flex flex-col justify-between">
-                        <p className="text-zinc-400 leading-relaxed">
-                          Default route using AniList anime ID. If AniList lookup fails, AniFlow API automatically retries the identifier as a MyAnimeList ID.
-                        </p>
-
-                        <div className="space-y-1.5 font-mono text-xs pt-3 border-t border-white/[0.06]">
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">anilistId</span>
-                            <span className="text-zinc-400 font-sans">AniList anime ID (number)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">episode</span>
-                            <span className="text-zinc-400 font-sans">Episode number (1-based)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1">
-                            <span className="font-semibold text-white">audio</span>
-                            <span className="text-zinc-400 font-sans">sub · dub (default: sub)</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card 2: MAL Embed */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-white/[0.08] shadow-xl flex flex-col justify-between overflow-hidden">
-                    <div className="flex flex-col flex-1">
-                      {/* Header bar */}
-                      <div className="px-3 sm:px-3.5 py-2.5 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                          <span className="text-xs font-bold text-white tracking-tight truncate">MAL Embed</span>
-                          <span className="text-zinc-600 shrink-0">·</span>
-                          <span className="text-[11px] font-mono text-zinc-400 shrink-0">/embed/mal</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopy(
-                              `${currentOrigin}/embed/mal/{malId}/{episode}/{audio}?server=flow`,
-                              "ep-mal"
-                            )
-                          }
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1C1C1C] hover:bg-[#252525] border border-white/[0.1] text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm active:scale-95"
-                        >
-                          {copiedType === "ep-mal" ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>{copiedType === "ep-mal" ? "Copied" : "Copy"}</span>
-                        </button>
-                      </div>
-
-                      {/* URL Box */}
-                      <div className="p-3.5 bg-[#060606] border-b border-white/[0.06] font-mono text-xs text-[#4ade80] overflow-x-auto leading-relaxed select-text custom-scrollbar">
-                        <code>{currentOrigin}/embed/mal/&#123;malId&#125;/&#123;episode&#125;/&#123;audio&#125;?server=flow</code>
-                      </div>
-
-                      {/* Content / Info */}
-                      <div className="p-4 space-y-3.5 text-xs flex-1 flex flex-col justify-between">
-                        <p className="text-zinc-400 leading-relaxed">
-                          Direct lookup using MyAnimeList anime ID. Compatible with all stream providers (Flow, Kitty, Yuri, Zuri, Buzz) and audio languages.
-                        </p>
-
-                        <div className="space-y-1.5 font-mono text-xs pt-3 border-t border-white/[0.06]">
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">malId</span>
-                            <span className="text-zinc-400 font-sans">MyAnimeList anime ID (number)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">episode</span>
-                            <span className="text-zinc-400 font-sans">Episode number (1-based)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1">
-                            <span className="font-semibold text-white">audio</span>
-                            <span className="text-zinc-400 font-sans">sub · dub (default: sub)</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card 3: AniList Direct M3U8 Stream */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-emerald-500/20 shadow-xl flex flex-col justify-between overflow-hidden">
-                    <div className="flex flex-col flex-1">
-                      <div className="px-3 sm:px-3.5 py-2.5 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                          <span className="text-xs font-bold text-white tracking-tight truncate">AniList M3U8 Stream</span>
-                          <span className="text-zinc-600 shrink-0">·</span>
-                          <span className="text-[11px] font-mono text-emerald-400 shrink-0 font-bold">/meu8/ani</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopy(
-                              `${currentOrigin}/meu8/ani/{anilistId}/{episode}/{audio}?server=flow`,
-                              "ep-m3u8-ani"
-                            )
-                          }
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-xs text-emerald-300 transition-all cursor-pointer shadow-sm active:scale-95"
-                        >
-                          {copiedType === "ep-m3u8-ani" ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>{copiedType === "ep-m3u8-ani" ? "Copied" : "Copy"}</span>
-                        </button>
-                      </div>
-
-                      <div className="p-3.5 bg-[#060606] border-b border-white/[0.06] font-mono text-xs text-emerald-400 overflow-x-auto leading-relaxed select-text custom-scrollbar">
-                        <code>{currentOrigin}/meu8/ani/&#123;anilistId&#125;/&#123;episode&#125;/&#123;audio&#125;?server=flow</code>
-                      </div>
-
-                      <div className="p-4 space-y-3.5 text-xs flex-1 flex flex-col justify-between">
-                        <p className="text-zinc-400 leading-relaxed">
-                          Direct HLS .m3u8 stream endpoint for HTML5 video tags, VLC, mpv, AVPlayer, or ExoPlayer using AniList anime ID.
-                        </p>
-
-                        <div className="space-y-1.5 font-mono text-xs pt-3 border-t border-white/[0.06]">
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">Format</span>
-                            <span className="text-emerald-400 font-sans">application/vnd.apple.mpegurl</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">audio</span>
-                            <span className="text-zinc-400 font-sans">sub · dub (default: sub)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1">
-                            <span className="font-semibold text-white">server</span>
-                            <span className="text-zinc-400 font-sans">flow · kitty · yuri · zuri · buzz</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card 4: MAL Direct M3U8 Stream */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-emerald-500/20 shadow-xl flex flex-col justify-between overflow-hidden">
-                    <div className="flex flex-col flex-1">
-                      <div className="px-3 sm:px-3.5 py-2.5 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                          <span className="text-xs font-bold text-white tracking-tight truncate">MAL M3U8 Stream</span>
-                          <span className="text-zinc-600 shrink-0">·</span>
-                          <span className="text-[11px] font-mono text-emerald-400 shrink-0 font-bold">/meu8/mal</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopy(
-                              `${currentOrigin}/meu8/mal/{malId}/{episode}/{audio}?server=flow`,
-                              "ep-m3u8-mal"
-                            )
-                          }
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-xs text-emerald-300 transition-all cursor-pointer shadow-sm active:scale-95"
-                        >
-                          {copiedType === "ep-m3u8-mal" ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>{copiedType === "ep-m3u8-mal" ? "Copied" : "Copy"}</span>
-                        </button>
-                      </div>
-
-                      <div className="p-3.5 bg-[#060606] border-b border-white/[0.06] font-mono text-xs text-emerald-400 overflow-x-auto leading-relaxed select-text custom-scrollbar">
-                        <code>{currentOrigin}/meu8/mal/&#123;malId&#125;/&#123;episode&#125;/&#123;audio&#125;?server=flow</code>
-                      </div>
-
-                      <div className="p-4 space-y-3.5 text-xs flex-1 flex flex-col justify-between">
-                        <p className="text-zinc-400 leading-relaxed">
-                          Direct HLS .m3u8 stream endpoint using MyAnimeList ID with automatic mapping, multi-server routing, and subtitle proxying.
-                        </p>
-
-                        <div className="space-y-1.5 font-mono text-xs pt-3 border-t border-white/[0.06]">
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">Format</span>
-                            <span className="text-emerald-400 font-sans">application/vnd.apple.mpegurl</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1 border-b border-white/[0.04]">
-                            <span className="font-semibold text-white">audio</span>
-                            <span className="text-zinc-400 font-sans">sub · dub (default: sub)</span>
-                          </div>
-                          <div className="flex items-center justify-between py-1">
-                            <span className="font-semibold text-white">server</span>
-                            <span className="text-zinc-400 font-sans">flow · kitty · yuri · zuri · buzz</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {/* TAB 2: IMPLEMENTATION */}
-            {activeDocTab === "implementation" && (
-              <motion.div
-                key="implementation"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                className="p-5 sm:p-6 rounded-2xl bg-[#030303] border border-white/[0.08] space-y-4 shadow-2xl"
-              >
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight">Implementation Examples</h3>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    Ready-to-use integration code for modern web apps and vanilla HTML sites:
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-                  {/* HTML Embed Snippet */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-white/[0.08] shadow-xl flex flex-col overflow-hidden">
-                    <div className="px-3 sm:px-3.5 py-2 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                        <span className="text-xs font-bold text-white tracking-tight truncate">Responsive HTML</span>
-                        <span className="hidden xs:inline text-zinc-600 shrink-0">·</span>
-                        <span className="hidden xs:inline text-[11px] font-mono text-zinc-400 shrink-0">embed.html</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleCopy(
-                            `<div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;">\n  <iframe\n    src="${currentOrigin}/embed/ani/154587/1/sub?server=flow1"\n    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;"\n    allowfullscreen\n    allow="autoplay; fullscreen; picture-in-picture"\n  ></iframe>\n</div>`,
-                            "code-html"
-                          )
-                        }
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1C1C1C] hover:bg-[#252525] border border-white/[0.1] text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm active:scale-95"
-                      >
-                        {copiedType === "code-html" ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                        <span>{copiedType === "code-html" ? "Copied" : "Copy"}</span>
-                      </button>
-                    </div>
-
-                    <div className="p-3.5 bg-[#060606] font-mono text-xs text-zinc-300 overflow-x-auto leading-relaxed select-text custom-scrollbar flex-1">
-                      <pre className="text-zinc-300 leading-relaxed font-mono">
-                        <span className="text-zinc-500">&lt;</span><span className="text-purple-400">div</span> <span className="text-sky-300">style</span>=<span className="text-emerald-400">&quot;position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden;&quot;</span><span className="text-zinc-500">&gt;</span>{"\n"}
-                        {"  "}<span className="text-zinc-500">&lt;</span><span className="text-purple-400">iframe</span>{"\n"}
-                        {"    "}<span className="text-sky-300">src</span>=<span className="text-emerald-400">&quot;{currentOrigin}/embed/ani/154587/1/sub?server=flow1&quot;</span>{"\n"}
-                        {"    "}<span className="text-sky-300">style</span>=<span className="text-emerald-400">&quot;position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;&quot;</span>{"\n"}
-                        {"    "}<span className="text-sky-300">allowfullscreen</span>{"\n"}
-                        {"    "}<span className="text-sky-300">allow</span>=<span className="text-emerald-400">&quot;autoplay; fullscreen; picture-in-picture&quot;</span>{"\n"}
-                        {"  "}<span className="text-zinc-500">&gt;&lt;/</span><span className="text-purple-400">iframe</span><span className="text-zinc-500">&gt;</span>{"\n"}
-                        <span className="text-zinc-500">&lt;/</span><span className="text-purple-400">div</span><span className="text-zinc-500">&gt;</span>
-                      </pre>
-                    </div>
-                  </div>
-
-                  {/* React / Next.js Component */}
-                  <div className="rounded-xl bg-[#0C0C0C] border border-white/[0.08] shadow-xl flex flex-col overflow-hidden">
-                    <div className="px-3 sm:px-3.5 py-2 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
-                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 mr-2">
-                        <span className="text-xs font-bold text-white tracking-tight truncate">React / Next.js</span>
-                        <span className="hidden xs:inline text-zinc-600 shrink-0">·</span>
-                        <span className="hidden xs:inline text-[11px] font-mono text-zinc-400 shrink-0">AnimePlayer.tsx</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleCopy(
-                            `export function AnimePlayer({\n  anilistId,\n  episode = 1,\n  audio = "sub",\n}: {\n  anilistId: number;\n  episode?: number;\n  audio?: "sub" | "dub";\n}) {\n  return (\n    <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-black">\n      <iframe\n        src={\`${currentOrigin}/embed/ani/\${anilistId}/\${episode}/\${audio}?server=flow1\`}\n        className="w-full h-full border-0"\n        allow="autoplay; fullscreen; picture-in-picture"\n        allowFullScreen\n      />\n    </div>\n  );\n}`,
-                            "code-react"
-                          )
-                        }
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1C1C1C] hover:bg-[#252525] border border-white/[0.1] text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm active:scale-95"
-                      >
-                        {copiedType === "code-react" ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                        <span>{copiedType === "code-react" ? "Copied" : "Copy"}</span>
-                      </button>
-                    </div>
-
-                    <div className="p-3.5 bg-[#060606] font-mono text-xs text-zinc-300 overflow-x-auto leading-relaxed select-text custom-scrollbar flex-1">
-                      <pre className="text-zinc-300 leading-relaxed font-mono">
-                        <span className="text-purple-400">export function</span> <span className="text-cyan-300">AnimePlayer</span>(&#123;{"\n"}
-                        {"  "}<span className="text-sky-300">anilistId</span>,{"\n"}
-                        {"  "}<span className="text-sky-300">episode</span> = <span className="text-amber-400">1</span>,{"\n"}
-                        {"  "}<span className="text-sky-300">audio</span> = <span className="text-emerald-400">&apos;sub&apos;</span>,{"\n"}
-                        &#125;: &#123;{"\n"}
-                        {"  "}<span className="text-sky-300">anilistId</span>: <span className="text-yellow-200">number</span>;{"\n"}
-                        {"  "}<span className="text-sky-300">episode</span>?: <span className="text-yellow-200">number</span>;{"\n"}
-                        {"  "}<span className="text-sky-300">audio</span>?: <span className="text-emerald-400">&apos;sub&apos;</span> | <span className="text-emerald-400">&apos;dub&apos;</span>;{"\n"}
-                        &#125;) &#123;{"\n"}
-                        {"  "}<span className="text-purple-400">return</span> ({"\n"}
-                        {"    "}<span className="text-zinc-500">&lt;</span><span className="text-purple-400">div</span> <span className="text-sky-300">className</span>=<span className="text-emerald-400">&quot;relative aspect-video w-full rounded-2xl overflow-hidden bg-black&quot;</span><span className="text-zinc-500">&gt;</span>{"\n"}
-                        {"      "}<span className="text-zinc-500">&lt;</span><span className="text-purple-400">iframe</span>{"\n"}
-                        {"        "}<span className="text-sky-300">src</span>=&#123;<span className="text-emerald-400">{`\`${currentOrigin}/embed/ani/\${anilistId}/\${episode}/\${audio}?server=flow1\``}</span>&#125;{"\n"}
-                        {"        "}<span className="text-sky-300">className</span>=<span className="text-emerald-400">&quot;w-full h-full border-0&quot;</span>{"\n"}
-                        {"        "}<span className="text-sky-300">allow</span>=<span className="text-emerald-400">&quot;autoplay; fullscreen; picture-in-picture&quot;</span>{"\n"}
-                        {"        "}<span className="text-sky-300">allowFullScreen</span>{"\n"}
-                        {"      "}<span className="text-zinc-500">/&gt;</span>{"\n"}
-                        {"    "}<span className="text-zinc-500">&lt;/</span><span className="text-purple-400">div</span><span className="text-zinc-500">&gt;</span>{"\n"}
-                        {"  "});{"\n"}
-                        &#125;
-                      </pre>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {/* TAB 3: OPTIONS */}
-            {activeDocTab === "options" && (
-              <motion.div
-                key="options"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                className="max-w-3xl mx-auto p-5 sm:p-6 rounded-2xl bg-[#030303] border border-white/[0.08] space-y-4 shadow-2xl"
-              >
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight">Query Parameters Reference</h3>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    You can append any of the following query options to both AniList and MAL embed URLs:
-                  </p>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-white/[0.08] text-zinc-400 font-mono">
-                        <th className="pb-2.5 pr-4 sm:pr-6 font-semibold whitespace-nowrap">Parameter</th>
-                        <th className="pb-2.5 pr-4 sm:pr-6 font-semibold whitespace-nowrap">Allowed Values</th>
-                        <th className="pb-2.5 pr-4 sm:pr-6 font-semibold whitespace-nowrap">Default</th>
-                        <th className="pb-2.5 font-semibold">Description</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.04]">
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-white whitespace-nowrap">
-                          server
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          flow · kitty · yuri · zuri · buzz
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          flow
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Selects initial stream provider. Flow, Kitty, Yuri, and Buzz support Sub &amp; Dub. Zuri is strictly Sub only.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-white whitespace-nowrap">
-                          audio
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          sub · dub
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          sub
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Preferred audio track. Defaults to Japanese Sub if omitted.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-white whitespace-nowrap">
-                          startAt / progress
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          number (seconds)
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          0
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Start playback at specified second mark across all embed URLs.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-white whitespace-nowrap">
-                          autoskipIntro
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          1 (on) · 0 (off)
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          1
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Automatically skip the opening song when AniSkip timestamps exist.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-white whitespace-nowrap">
-                          autoskipOutro
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          1 (on) · 0 (off)
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          1
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Automatically skip the ending credits when timestamps exist.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono font-bold text-emerald-400 whitespace-nowrap">
-                          format
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          m3u8 · json · sources
-                        </td>
-                        <td className="py-2.5 pr-4 sm:pr-6 font-mono text-zinc-400 whitespace-nowrap">
-                          json
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Output format. Setting <code className="text-emerald-400 font-mono">format=m3u8</code> directly streams the HLS playlist. Also accessible via clean routes: <code className="text-emerald-400 font-mono">/meu8/ani/:id/:ep/:audio</code> and <code className="text-emerald-400 font-mono">/meu8/mal/:id/:ep/:audio</code>.
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </motion.div>
-            )}
-
-            {/* TAB 4: EVENTS */}
-            {activeDocTab === "events" && (
-              <motion.div
-                key="events"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                className="max-w-3xl mx-auto p-5 sm:p-6 rounded-2xl bg-[#030303] border border-white/[0.08] space-y-4 shadow-2xl"
-              >
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight">Player Events &amp; Lifecycle</h3>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    The player emits structured postMessage payloads to <code className="text-zinc-300 bg-white/[0.06] px-1.5 py-0.5 rounded font-mono">window.parent</code> on every major lifecycle change:
-                  </p>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="border-b border-white/[0.08] text-zinc-400 font-mono">
-                        <th className="pb-2.5 font-semibold w-40 sm:w-48">Event</th>
-                        <th className="pb-2.5 font-semibold">Description</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.04]">
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-white whitespace-nowrap">
-                          progress
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Playing-state snapshot emitted every five seconds.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-white whitespace-nowrap">
-                          pause
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Emitted whenever video playback is paused.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-white whitespace-nowrap">
-                          ended
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Emitted when video playback finishes the episode.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-white whitespace-nowrap">
-                          next / previous
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Emitted for sequence navigation to trigger the next or previous episode.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-white whitespace-nowrap">
-                          command-result
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Resolves with updated player state matching caller requestId.
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-white/[0.015] transition-colors">
-                        <td className="py-2.5 pr-4 font-mono font-bold text-rose-400/90 whitespace-nowrap">
-                          CONTENT_UNAVAILABLE
-                        </td>
-                        <td className="py-2.5 text-zinc-300 font-sans leading-relaxed">
-                          Emitted if all stream routes fail or source is region restricted.
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </motion.div>
-            )}
-
-            {/* TAB 5: POSTMESSAGE */}
-            {activeDocTab === "postmessage" && (
-              <motion.div
-                key="postmessage"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-                className="rounded-2xl bg-[#030303] border border-white/[0.08] shadow-2xl overflow-hidden md:h-[408px]"
-              >
-                <div className="grid grid-cols-1 md:grid-cols-12 items-stretch h-full">
-                  {/* Left Column: Commands Reference */}
-                  <div className="col-span-12 md:col-span-5 p-5 sm:p-6 pb-6 sm:pb-7 border-b md:border-b-0 md:border-r border-white/[0.08] flex flex-col justify-start h-full">
-                    <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">Commands</h3>
-                    <p className="text-xs text-zinc-400 mt-1 mb-3.5 leading-relaxed">
-                      Include requestId to receive a matched command-result.
-                    </p>
-
-                    <div className="space-y-1.5 text-xs font-mono">
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">play</span>
-                        <span className="text-zinc-500">None</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">pause</span>
-                        <span className="text-zinc-500">None</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">seek</span>
-                        <span className="text-zinc-400">&#123; time: number &#125;</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">setVolume</span>
-                        <span className="text-zinc-400">&#123; volume: 0..1 &#125;</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">setMuted</span>
-                        <span className="text-zinc-400">&#123; muted: boolean &#125;</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5 border-b border-white/[0.04]">
-                        <span className="font-semibold text-white">setPlaybackRate</span>
-                        <span className="text-zinc-400">&#123; rate: 0.25..2 &#125;</span>
-                      </div>
-                      <div className="flex items-start justify-between py-1.5 border-b border-white/[0.04] gap-2">
-                        <span className="font-semibold text-white shrink-0">setProvider</span>
-                        <span className="text-zinc-400 text-right leading-tight">&#123; language: &apos;sub&apos; | &apos;dub&apos;, providerId: string &#125;</span>
-                      </div>
-                      <div className="flex items-center justify-between py-1.5">
-                        <span className="font-semibold text-white">getState</span>
-                        <span className="text-zinc-500">None</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right Column: Console / SDK Code with matching neutral dark card */}
-                  <div className="col-span-12 md:col-span-7 p-3 sm:p-4 flex flex-col h-full min-h-0">
-                    <div className="rounded-xl bg-[#0C0C0C] border border-white/[0.08] shadow-2xl flex flex-col h-full min-h-0 overflow-hidden">
-                      {/* Console Top Header Bar with Clean Copy Button */}
-                      <div className="px-3.5 py-2 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between shrink-0">
-                        <span className="text-[11px] font-mono text-zinc-400 font-medium">
-                          parent-sdk.js
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleCopy(
-                              `const player = document.querySelector('#anime-player');\nconst playerOrigin = new URL(player.src).origin;\nconst pending = new Map();\n\nwindow.addEventListener('message', (event) => {\n  const message = event.data;\n  if (event.source !== player.contentWindow || event.origin !== playerOrigin || message?.source !== 'aniembed') return;\n\n  if (message.name === 'command-result' && message.requestId) {\n    const request = pending.get(message.requestId);\n    if (request) {\n      pending.delete(message.requestId);\n      message.data.ok ? request.resolve(message.data.state) : request.reject(message.data.error);\n    }\n  }\n\n  if (['progress', 'pause', 'ended'].includes(message.name)) {\n    saveWatchHistory(message.data);\n  }\n\n  if (message.name === 'next' || message.name === 'previous') {\n    player.src = getEpisodeUrl(message.name);\n  }\n});\n\nfunction sendCommand(name, data = {}) {\n  const requestId = crypto.randomUUID();\n  player.contentWindow?.postMessage({\n    source: 'aniembed', version: 1, type: 'command', name, requestId, data\n  }, playerOrigin);\n  return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));\n}\n\nawait sendCommand('setProvider', { language: 'sub', providerId: 'uwu' });\nawait sendCommand('seek', { time: 145 });`,
-                              "code-sdk"
-                            )
-                          }
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1C1C1C] hover:bg-[#252525] border border-white/[0.1] text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm active:scale-95"
-                        >
-                          {copiedType === "code-sdk" ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>{copiedType === "code-sdk" ? "Copied" : "Copy"}</span>
-                        </button>
-                      </div>
-
-                      {/* Scrollable code area constrained to parent height */}
-                      <div className="flex-1 min-h-0 p-3.5 bg-[#060606] font-mono text-xs text-zinc-300 overflow-y-auto overflow-x-auto leading-relaxed select-text custom-scrollbar">
-                        <pre className="text-zinc-300 leading-relaxed font-mono">
-                          <span className="text-zinc-500">const</span> <span className="text-sky-300">player</span> = <span className="text-yellow-200">document</span>.<span className="text-cyan-300">querySelector</span>(<span className="text-emerald-400">&apos;#anime-player&apos;</span>);{"\n"}
-                          <span className="text-zinc-500">const</span> <span className="text-sky-300">playerOrigin</span> = <span className="text-zinc-500">new</span> <span className="text-yellow-200">URL</span>(<span className="text-sky-300">player</span>.<span className="text-zinc-300">src</span>).<span className="text-zinc-300">origin</span>;{"\n"}
-                          <span className="text-zinc-500">const</span> <span className="text-sky-300">pending</span> = <span className="text-zinc-500">new</span> <span className="text-yellow-200">Map</span>();{"\n\n"}
-                          <span className="text-yellow-200">window</span>.<span className="text-cyan-300">addEventListener</span>(<span className="text-emerald-400">&apos;message&apos;</span>, (<span className="text-sky-300">event</span>) =&gt; &#123;{"\n"}
-                          {"  "}<span className="text-zinc-500">const</span> <span className="text-sky-300">message</span> = <span className="text-sky-300">event</span>.<span className="text-zinc-300">data</span>;{"\n"}
-                          {"  "}<span className="text-purple-400">if</span> (<span className="text-sky-300">event</span>.<span className="text-zinc-300">source</span> !== <span className="text-sky-300">player</span>.<span className="text-zinc-300">contentWindow</span> || <span className="text-sky-300">event</span>.<span className="text-zinc-300">origin</span> !== <span className="text-sky-300">playerOrigin</span> || <span className="text-sky-300">message</span>?.<span className="text-zinc-300">source</span> !== <span className="text-emerald-400">&apos;aniembed&apos;</span>) <span className="text-purple-400">return</span>;{"\n\n"}
-                          {"  "}<span className="text-purple-400">if</span> (<span className="text-sky-300">message</span>.<span className="text-zinc-300">name</span> === <span className="text-emerald-400">&apos;command-result&apos;</span> &amp;&amp; <span className="text-sky-300">message</span>.<span className="text-zinc-300">requestId</span>) &#123;{"\n"}
-                          {"    "}<span className="text-zinc-500">const</span> <span className="text-sky-300">request</span> = <span className="text-sky-300">pending</span>.<span className="text-cyan-300">get</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">requestId</span>);{"\n"}
-                          {"    "}<span className="text-purple-400">if</span> (<span className="text-sky-300">request</span>) &#123;{"\n"}
-                          {"      "}<span className="text-sky-300">pending</span>.<span className="text-cyan-300">delete</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">requestId</span>);{"\n"}
-                          {"      "}<span className="text-sky-300">message</span>.<span className="text-zinc-300">data</span>.<span className="text-zinc-300">ok</span> ? <span className="text-sky-300">request</span>.<span className="text-cyan-300">resolve</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">data</span>.<span className="text-zinc-300">state</span>) : <span className="text-sky-300">request</span>.<span className="text-cyan-300">reject</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">data</span>.<span className="text-zinc-300">error</span>);{"\n"}
-                          {"    "}&#125;{"\n"}
-                          {"  "}&#125;{"\n\n"}
-                          {"  "}<span className="text-purple-400">if</span> ([<span className="text-emerald-400">&apos;progress&apos;</span>, <span className="text-emerald-400">&apos;pause&apos;</span>, <span className="text-emerald-400">&apos;ended&apos;</span>].<span className="text-cyan-300">includes</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">name</span>)) &#123;{"\n"}
-                          {"    "}<span className="text-cyan-300">saveWatchHistory</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">data</span>);{"\n"}
-                          {"  "}&#125;{"\n\n"}
-                          {"  "}<span className="text-purple-400">if</span> (<span className="text-sky-300">message</span>.<span className="text-zinc-300">name</span> === <span className="text-emerald-400">&apos;next&apos;</span> || <span className="text-sky-300">message</span>.<span className="text-zinc-300">name</span> === <span className="text-emerald-400">&apos;previous&apos;</span>) &#123;{"\n"}
-                          {"    "}<span className="text-sky-300">player</span>.<span className="text-zinc-300">src</span> = <span className="text-cyan-300">getEpisodeUrl</span>(<span className="text-sky-300">message</span>.<span className="text-zinc-300">name</span>);{"\n"}
-                          {"  "}&#125;{"\n"}
-                          &#125;);{"\n\n"}
-                          <span className="text-purple-400">function</span> <span className="text-cyan-300">sendCommand</span>(<span className="text-sky-300">name</span>, <span className="text-sky-300">data</span> = &#123;&#125;) &#123;{"\n"}
-                          {"  "}<span className="text-zinc-500">const</span> <span className="text-sky-300">requestId</span> = <span className="text-yellow-200">crypto</span>.<span className="text-cyan-300">randomUUID</span>();{"\n"}
-                          {"  "}<span className="text-sky-300">player</span>.<span className="text-zinc-300">contentWindow</span>?.<span className="text-cyan-300">postMessage</span>(&#123;{"\n"}
-                          {"    "}<span className="text-zinc-300">source</span>: <span className="text-emerald-400">&apos;aniembed&apos;</span>, <span className="text-zinc-300">version</span>: <span className="text-amber-400">1</span>, <span className="text-zinc-300">type</span>: <span className="text-emerald-400">&apos;command&apos;</span>, <span className="text-zinc-300">name</span>, <span className="text-zinc-300">requestId</span>, <span className="text-zinc-300">data</span>{"\n"}
-                          {"  "}&#125;, <span className="text-sky-300">playerOrigin</span>);{"\n"}
-                          {"  "}<span className="text-purple-400">return</span> <span className="text-zinc-500">new</span> <span className="text-yellow-200">Promise</span>((<span className="text-sky-300">resolve</span>, <span className="text-sky-300">reject</span>) =&gt; <span className="text-sky-300">pending</span>.<span className="text-cyan-300">set</span>(<span className="text-sky-300">requestId</span>, &#123; <span className="text-sky-300">resolve</span>, <span className="text-sky-300">reject</span> &#125;));{"\n"}
-                          &#125;{"\n\n"}
-                          <span className="text-purple-400">await</span> <span className="text-cyan-300">sendCommand</span>(<span className="text-emerald-400">&apos;setProvider&apos;</span>, &#123; <span className="text-zinc-300">language</span>: <span className="text-emerald-400">&apos;sub&apos;</span>, <span className="text-zinc-300">providerId</span>: <span className="text-emerald-400">&apos;uwu&apos;</span> &#125;);{"\n"}
-                          <span className="text-purple-400">await</span> <span className="text-cyan-300">sendCommand</span>(<span className="text-emerald-400">&apos;seek&apos;</span>, &#123; <span className="text-zinc-300">time</span>: <span className="text-amber-400">145</span> &#125;);
-                        </pre>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-              </AnimatePresence>
+          <div className="min-w-0 flex flex-col">
+            <div className="relative aspect-video w-full rounded-[22px] overflow-hidden bg-black ring-1 ring-white/[0.08]">
+              <iframe
+                src={fullEmbedUrl}
+                className="absolute inset-0 w-full h-full border-0"
+                allow="autoplay; fullscreen; picture-in-picture"
+                allowFullScreen
+                title="AniFlow player"
+              />
             </div>
-          </motion.div>
-        </div>
-      </section>
 
-      {/* FAQ SECTION */}
-      <section
-        id="faq"
-        className="py-16 sm:py-24 border-t border-white/[0.06] relative scroll-mt-20"
-      >
-        <div className="max-w-4xl mx-auto px-4 sm:px-6">
-          <div className="text-center max-w-2xl mx-auto mb-10">
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white mb-2">
-              Frequently Asked Questions
-            </h2>
-            <p className="text-xs sm:text-sm text-zinc-400">
-              Clear answers regarding embed URLs, databases, postMessage telemetry, and self-hosting.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            {FAQS.map((faq, index) => {
-              const isOpen = openFaqIndex === index;
-              return (
-                <div
-                  key={index}
-                  className="rounded-xl bg-[#080808] border border-white/[0.08] hover:border-white/[0.16] transition-colors overflow-hidden"
+            <div className="flex flex-col xl:flex-row xl:items-center gap-3 px-1.5 sm:px-2 pt-3 pb-1">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <code className="text-[12px] font-mono text-zinc-400 truncate">{embedPath}</code>
+                <CopyButton text={fullEmbedUrl} label="Copy embed" className="hidden sm:flex" />
+                <a
+                  href={fullEmbedUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="glass-btn w-8 h-8 rounded-full hidden sm:flex items-center justify-center text-zinc-300 hover:text-white shrink-0"
+                  aria-label="Open player in new tab"
                 >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Segmented size="sm" value={quality} options={QUALITY_OPTIONS} onChange={setQuality} layoutId="seg-quality" />
+                <a
+                  href={downloadPath}
+                  download
+                  onClick={startDownload}
+                  className="btn-solid h-9 px-4 rounded-full text-[13px] font-semibold flex items-center gap-2 shrink-0 active:scale-95"
+                >
+                  {downloadStarting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  Download
+                </a>
+              </div>
+            </div>
+            <AnimatePresence>
+              {downloadHint && (
+                <motion.p
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="px-2 pb-1 text-[12px] text-zinc-400 overflow-hidden xl:text-right"
+                >
+                  The MP4 is built while it downloads, so your browser shows no total size. Expect 1–2 minutes per episode.
+                </motion.p>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      </section>
+
+      {/* Features */}
+      <section id="features" className="max-w-6xl mx-auto px-4 sm:px-6 pt-28 sm:pt-36 scroll-mt-20">
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-8 lg:gap-16">
+          <div>
+            <h2 className="text-[28px] font-bold tracking-[-0.02em] text-white lg:sticky lg:top-28">What&apos;s included</h2>
+          </div>
+          <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
+            {FEATURES.map(([title, desc, tag]) => (
+              <div key={title} className="py-5 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-x-8 gap-y-1.5">
+                <div>
+                  <h3 className="text-[15px] font-semibold text-white">{title}</h3>
+                  <p className="text-[14px] text-zinc-400 leading-relaxed mt-1 max-w-xl">{desc}</p>
+                </div>
+                <code className="text-[12px] font-mono text-zinc-500 sm:pt-0.5">{tag}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Docs */}
+      <section id="docs" className="max-w-6xl mx-auto px-4 sm:px-6 pt-28 sm:pt-36 scroll-mt-20">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-5 mb-6">
+          <div>
+            <h2 className="text-[28px] font-bold tracking-[-0.02em] text-white">Docs</h2>
+            <p className="text-[15px] text-zinc-400 mt-1">
+              Base URL <code className="font-mono text-zinc-200">{origin}</code>
+            </p>
+          </div>
+          <div className="overflow-x-auto no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
+            <Segmented value={activeDocTab} options={DOC_TABS} onChange={(id) => setActiveDocTab(id as DocTab)} layoutId="seg-docs" />
+          </div>
+        </div>
+
+        <div className="glass rounded-[26px] px-5 sm:px-7 py-2 min-h-[320px]">
+          <AnimatePresence mode="wait" initial={false}>
+            {activeDocTab === "endpoints" && (
+              <motion.div key="endpoints" {...tabMotion} className="divide-y divide-white/[0.07]">
+                <Endpoint
+                  path="/embed/{ani|mal}/{id}/{episode}/{audio}"
+                  desc="The player, ready for an iframe. audio is sub or dub; add ?server= to pick the starting source."
+                  example={`${origin}/embed/ani/16498/1/sub`}
+                />
+                <Endpoint
+                  path="/api/download/{ani|mal}/{id}/{episode}/{audio}"
+                  desc="The whole episode as one MP4 attachment, named after the anime. Supports ?server= and ?quality=1080|720|480."
+                  example={`${origin}/api/download/ani/16498/1/sub?server=flow`}
+                />
+                <Endpoint
+                  path="/meu8/{ani|mal}/{id}/{episode}/{audio}"
+                  desc="Redirects to a proxied .m3u8 playlist for hls.js, VLC, mpv or native players."
+                  example={`${origin}/meu8/ani/16498/1/sub`}
+                />
+                <Endpoint
+                  path="/api/play?anilistId={id}&episode={n}&audio={sub|dub}"
+                  desc="JSON with the resolved stream, subtitles, intro/outro timestamps and every available server."
+                  example={`${origin}/api/play?anilistId=16498&episode=1&audio=sub`}
+                />
+              </motion.div>
+            )}
+
+            {activeDocTab === "code" && (
+              <motion.div key="code" {...tabMotion} className="grid grid-cols-1 lg:grid-cols-2 gap-3 py-5">
+                <CodeBlock title="index.html" code={htmlSnippet} />
+                <CodeBlock title="AnimePlayer.tsx" code={reactSnippet} />
+                <CodeBlock title="download.sh" code={downloadSnippet} className="lg:col-span-2" />
+              </motion.div>
+            )}
+
+            {activeDocTab === "options" && (
+              <motion.div key="options" {...tabMotion} className="overflow-x-auto custom-scrollbar py-3">
+                <table className="w-full text-left text-[13.5px]">
+                  <thead>
+                    <tr className="text-[12px] text-zinc-500">
+                      <th className="py-3 pr-6 font-medium">Parameter</th>
+                      <th className="py-3 pr-6 font-medium">Values</th>
+                      <th className="py-3 pr-6 font-medium">Default</th>
+                      <th className="py-3 font-medium">Applies to</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.07]">
+                    {[
+                      ["server", "flow, kitty, yuri, zuri, buzz", "flow", "all routes (zuri is sub only)"],
+                      ["audio", "sub, dub", "sub", "all routes"],
+                      ["quality", "1080, 720, 480", "best", "/api/download"],
+                      ["startAt", "seconds", "0", "/embed"],
+                      ["autoskipIntro", "1, 0", "1", "/embed"],
+                      ["autoskipOutro", "1, 0", "1", "/embed"],
+                      ["format", "json, m3u8, sources", "json", "/api/play"],
+                    ].map(([p, v, d, a]) => (
+                      <tr key={p}>
+                        <td className="py-3 pr-6 font-mono text-white whitespace-nowrap">{p}</td>
+                        <td className="py-3 pr-6 font-mono text-zinc-300 whitespace-nowrap">{v}</td>
+                        <td className="py-3 pr-6 font-mono text-zinc-500 whitespace-nowrap">{d}</td>
+                        <td className="py-3 text-zinc-400 whitespace-nowrap">{a}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </motion.div>
+            )}
+
+            {activeDocTab === "events" && (
+              <motion.div key="events" {...tabMotion} className="divide-y divide-white/[0.07]">
+                {[
+                  ["progress", "Playback snapshot, every five seconds."],
+                  ["pause", "Playback was paused."],
+                  ["ended", "The episode finished."],
+                  ["next / previous", "The viewer asked for another episode."],
+                  ["command-result", "Reply to a command, matched by requestId."],
+                  ["CONTENT_UNAVAILABLE", "No server could provide the stream."],
+                ].map(([name, desc]) => (
+                  <div key={name} className="py-4 grid grid-cols-1 sm:grid-cols-[220px_1fr] gap-1">
+                    <code className="font-mono text-[13px] text-white">{name}</code>
+                    <span className="text-[14px] text-zinc-400">{desc}</span>
+                  </div>
+                ))}
+              </motion.div>
+            )}
+
+            {activeDocTab === "postmessage" && (
+              <motion.div key="postmessage" {...tabMotion} className="grid grid-cols-1 lg:grid-cols-[1fr_1.6fr] gap-6 py-5">
+                <div className="divide-y divide-white/[0.07] text-[13px]">
+                  {[
+                    ["play", ""],
+                    ["pause", ""],
+                    ["seek", "{ time }"],
+                    ["setVolume", "{ volume: 0–1 }"],
+                    ["setMuted", "{ muted }"],
+                    ["setPlaybackRate", "{ rate: 0.25–2 }"],
+                    ["setProvider", "{ language, providerId }"],
+                    ["getState", ""],
+                  ].map(([cmd, args]) => (
+                    <div key={cmd} className="flex items-center justify-between gap-3 py-2.5 font-mono">
+                      <span className="text-white">{cmd}</span>
+                      <span className="text-zinc-500">{args}</span>
+                    </div>
+                  ))}
+                </div>
+                <CodeBlock title="parent.js" code={sdkSnippet} className="max-h-[440px]" />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </section>
+
+      {/* FAQ */}
+      <section id="faq" className="max-w-6xl mx-auto px-4 sm:px-6 pt-28 sm:pt-36 scroll-mt-20">
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-8 lg:gap-16">
+          <h2 className="text-[28px] font-bold tracking-[-0.02em] text-white">FAQ</h2>
+          <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
+            {FAQS.map((faq, i) => {
+              const open = openFaq === i;
+              return (
+                <div key={faq.q}>
                   <button
                     type="button"
-                    onClick={() => setOpenFaqIndex(isOpen ? null : index)}
-                    className="w-full px-5 py-4 text-left flex items-center justify-between gap-4 cursor-pointer focus:outline-none"
+                    onClick={() => setOpenFaq(open ? null : i)}
+                    aria-expanded={open}
+                    className="w-full py-5 flex items-center justify-between gap-6 text-left cursor-pointer group"
                   >
-                    <span className="text-sm sm:text-base font-bold text-white tracking-tight">
-                      {faq.q}
-                    </span>
-                    <div
-                      className={cn(
-                        "w-6 h-6 rounded-full bg-white/[0.06] border border-white/[0.1] flex items-center justify-center shrink-0 transition-transform duration-200",
-                        isOpen && "rotate-180 bg-white/20"
-                      )}
-                    >
-                      <ChevronDown className="w-3.5 h-3.5 text-zinc-300" />
-                    </div>
+                    <span className="text-[15px] font-medium text-white">{faq.q}</span>
+                    <Plus className={cn("w-4 h-4 text-zinc-500 group-hover:text-white shrink-0 transition-transform duration-300", open && "rotate-45")} />
                   </button>
-
                   <AnimatePresence initial={false}>
-                    {isOpen && (
+                    {open && (
                       <motion.div
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: "auto", opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2, ease: "easeInOut" }}
+                        transition={{ duration: 0.25, ease: EASE }}
                         className="overflow-hidden"
                       >
-                        <div className="px-5 pb-5 pt-1 text-xs sm:text-sm text-zinc-400 leading-relaxed border-t border-white/[0.04]">
-                          {faq.a}
-                        </div>
+                        <p className="pb-5 pr-10 text-[14px] text-zinc-400 leading-relaxed">{faq.a}</p>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -1658,150 +886,46 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* SYSTEM STATUS SECTION */}
-      <section
-        id="status"
-        className="py-16 sm:py-20 scroll-mt-20 border-t border-white/[0.06]"
-      >
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 space-y-6">
-          {/* Heading */}
-          <div className="text-center space-y-1.5 mb-8">
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-              System Status
-            </h2>
-            <p className="text-sm text-zinc-400">
-              Live checks for embed delivery and stream servers.
+      {/* Status */}
+      <section id="status" className="max-w-6xl mx-auto px-4 sm:px-6 pt-28 sm:pt-36 scroll-mt-20">
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-8 lg:gap-16">
+          <div>
+            <h2 className="text-[28px] font-bold tracking-[-0.02em] text-white">Status</h2>
+            <p className="text-[14px] text-zinc-500 mt-1" suppressHydrationWarning>
+              {checkedAt ? `Checked at ${checkedAt}` : ""}
             </p>
           </div>
-
-          {/* Infrastructure Card */}
-          <div className="rounded-2xl bg-[#030303] border border-white/[0.08] shadow-2xl overflow-hidden">
-            {/* Table Header / Action Bar */}
-            <div className="px-5 py-3.5 bg-[#0C0C0C] border-b border-white/[0.06] flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Server className="w-4 h-4 text-zinc-300" />
-                <span className="text-sm font-bold text-white tracking-wide">Infrastructure</span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {STATUS_ROWS.map((name) => (
+              <div key={name} className="glass-inset rounded-2xl px-4 py-3.5">
+                <div className="text-[14px] font-medium text-white">{name}</div>
+                <div className="flex items-center gap-1.5 mt-1 text-[12px] text-zinc-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Operational
+                </div>
               </div>
-
-              <button
-                type="button"
-                onClick={handleRefreshStatus}
-                className="h-7 px-3 rounded-full bg-[#181818] hover:bg-[#202020] border border-white/[0.08] text-xs font-medium text-zinc-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-              >
-                <RotateCw
-                  className={cn("w-3 h-3 text-zinc-400 transition-transform", isRefreshingStatus && "animate-spin")}
-                />
-                <span>Refresh</span>
-              </button>
-            </div>
-
-            {/* Table */}
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs font-product-sans">
-                <thead>
-                  <tr className="border-b border-white/[0.06] text-zinc-400 bg-[#030303]">
-                    <th className="py-3 px-5 font-semibold">Name</th>
-                    <th className="py-3 px-5 font-semibold">Status</th>
-                    <th className="py-3 px-5 font-semibold">Role</th>
-                    <th className="py-3 px-5 font-semibold text-right">Last Check</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {[
-                    { name: "Edge CDN", role: "Media delivery", status: "Operational" },
-                    { name: "API", role: "Resolve & embed", status: "Operational" },
-                    { name: "Flow", role: "Stream server", status: "Operational" },
-                    { name: "Kitty", role: "Stream server", status: "Operational" },
-                    { name: "Yuri", role: "Stream server", status: "Operational" },
-                    { name: "Zuri", role: "Stream server", status: "Operational" },
-                    { name: "Buzz", role: "Stream server", status: "Operational" },
-                  ].map((row, idx) => (
-                    <tr
-                      key={idx}
-                      className="hover:bg-white/[0.02] transition-colors"
-                    >
-                      <td className="py-3.5 px-5 font-bold text-white whitespace-nowrap">
-                        {row.name}
-                      </td>
-                      <td className="py-3.5 px-5">
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          <span>{row.status}</span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-5 text-zinc-400 whitespace-nowrap">
-                        {row.role}
-                      </td>
-                      <td className="py-3.5 px-5 text-zinc-400 text-right font-mono whitespace-nowrap" suppressHydrationWarning>
-                        {isMounted && statusLastCheckTime ? statusLastCheckTime : "10:20:24 PM"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            ))}
           </div>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="py-12 px-4 sm:px-6 border-t border-white/[0.06] bg-[#030303] backdrop-blur-sm text-center space-y-6">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
-            <img src="/logo.svg" alt="AniFlow API Logo" className="w-6 h-6 object-contain" />
-            <span className="font-extrabold text-sm tracking-tight text-white">AniFlow API</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.08] text-zinc-400 border border-white/[0.1]">
-              v1.0
-            </span>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-zinc-400">
-            <button
-              type="button"
-              onClick={() => scrollToSection("features")}
-              className="hover:text-white transition-colors cursor-pointer"
-            >
-              Features
-            </button>
-            <button
-              type="button"
-              onClick={() => scrollToSection("docs")}
-              className="hover:text-white transition-colors cursor-pointer"
-            >
-              Documentation
-            </button>
-            <button
-              type="button"
-              onClick={() => scrollToSection("faq")}
-              className="hover:text-white transition-colors cursor-pointer"
-            >
-              FAQ
-            </button>
-            <button
-              type="button"
-              onClick={() => scrollToSection("status")}
-              className="hover:text-white transition-colors cursor-pointer"
-            >
-              System Status
-            </button>
-            <a
-              href="https://github.com/realmichaelstetson/AniFlow-API"
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-white transition-colors flex items-center gap-1"
-            >
-              <span>GitHub</span>
-              <ExternalLink className="w-3 h-3 text-zinc-500" />
-            </a>
-          </div>
-
-          <p className="text-xs text-zinc-500">
-            © 2026 AniFlow API • MIT License
-          </p>
+      <footer className="max-w-6xl mx-auto px-4 sm:px-6 pt-28 pb-10">
+        <div className="border-t border-white/[0.07] pt-6 flex flex-col sm:flex-row justify-between gap-4 text-[13px] text-zinc-500">
+          <span>© 2026 AniFlow API · MIT License</span>
+          <a
+            href="https://github.com/realmichaelstetson/AniFlow-API"
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-white transition-colors"
+          >
+            github.com/realmichaelstetson/AniFlow-API
+          </a>
         </div>
-
-        <p className="max-w-3xl mx-auto text-[11px] text-zinc-600 leading-relaxed">
-          DMCA & Legal Disclaimer: AniFlow API is an open-source stream aggregator and player framework. We do not host, store, or upload media files. All streams are resolved dynamically from publicly available third-party endpoints. Copyright inquiries should be directed to the respective upstream media hosts.
+        <p className="mt-6 max-w-3xl text-[12px] text-zinc-600 leading-relaxed">
+          AniFlow API is an open-source stream aggregator and player framework. It does not host, store or upload media;
+          all streams are resolved from publicly available third-party endpoints. Copyright inquiries should be directed to
+          the respective upstream hosts.
         </p>
       </footer>
     </div>
