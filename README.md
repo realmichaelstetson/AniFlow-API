@@ -31,6 +31,7 @@ Built for speed, reliability, and visual polish, AniFlow features:
 - **5-Server Redundant Architecture** (`Flow`, `Kitty`, `Yuri`, `Zuri`, `Buzz`).
 - **Direct HLS `.m3u8` Stream API**: Stream directly to VLC, mpv, ExoPlayer, AVPlayer, or HTML5 `<video>` via `/meu8/ani/...` and `/meu8/mal/...`.
 - **Strict Dub Verification**: Eliminates silent Japanese fallbacks on English dub streams.
+- **Episode Downloads**: Any episode as a single MP4 via `/api/download/ani/...` and `/api/download/mal/...`.
 - **Dual ID Resolution**: Works seamlessly with both **AniList** (`/embed/ani/...`, `/meu8/ani/...`) and **MyAnimeList** (`/embed/mal/...`, `/meu8/mal/...`) IDs.
 - **Adaptive Skip-Times Engine**: Dual-source OP/ED markers via Re:ANIME & AniSkip APIs with duration compensation.
 - **Resilient Multilingual Subtitle Proxy**: Seamless track persistence across server switching.
@@ -149,7 +150,37 @@ curl -IL "https://your-domain.com/meu8/mal/16498/1/dub"
 
 ---
 
-### 3. REST API Endpoints
+### 3. Episode Download API (`/api/download/...`)
+
+Downloads a whole episode as a single MP4 file. Segments are fetched in parallel through the stream proxy, AES-128 decrypted when needed, and remuxed (no re-encoding) by ffmpeg into a fragmented MP4 that streams straight to the client.
+
+```http
+GET /api/download/ani/{anilistId}/{episode}/{audio}?server={server}&quality={quality}
+GET /api/download/mal/{malId}/{episode}/{audio}?server={server}&quality={quality}
+GET /api/download?anilistId=16498&episode=1&audio=sub&server=flow
+```
+
+```bash
+# Saves "Attack on Titan - E01 [SUB].mp4"
+curl -OJ "https://your-domain.com/api/download/ani/16498/1/sub"
+
+# 720p English dub from Buzz
+curl -OJ "https://your-domain.com/api/download/mal/16498/1/dub?server=buzz&quality=720"
+```
+
+| Parameter | Values | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `audio` | `sub`, `dub` | `sub` | Audio track to keep in the file. |
+| `server` | `flow`, `kitty`, `yuri`, `zuri`, `buzz` | `flow` | Stream source. |
+| `quality` | `1080`, `720`, `480` | best | Highest resolution to download. |
+
+- **Response**: `video/mp4` with `Content-Disposition: attachment` and the anime title as filename, plus `X-Episode-Duration` (seconds) and `X-Episode-Resolution` headers. No `Content-Length` — the file is built while it streams.
+- **ffmpeg**: Required on the host (`ffmpeg` on `PATH`, or `FFMPEG_PATH`). Flow and Kitty ship audio as a separate HLS rendition, which can only be merged with ffmpeg. Without ffmpeg, servers with muxed audio (Buzz, Yuri) fall back to a raw `.ts` file and Flow/Kitty return `501 FFMPEG_REQUIRED`.
+- **Timing**: A 24-minute 1080p episode is roughly 0.5–1 GB and typically completes in 1–2 minutes.
+
+---
+
+### 4. REST API Endpoints
 
 #### `GET /api/play`
 Queries stream manifests, proxy URLs, and subtitle tracks:
@@ -377,6 +408,7 @@ aniflow-api/
 ### Prerequisites
 - [Node.js](https://nodejs.org/) (`v18.17.0` or higher)
 - `npm`, `yarn`, or `pnpm`
+- [ffmpeg](https://ffmpeg.org/) on `PATH` (only for `/api/download`)
 
 ### Installation
 
