@@ -3,7 +3,7 @@ import http from "http";
 import https from "https";
 import axios from "axios";
 import { isSafePublicUrl } from "@/shared/validators";
-import { findTsStartOffset, looksLikeTextErrorPayload } from "@/lib/stream-proxy/media-buffer";
+import { findTsStartOffset, looksLikeTextErrorPayload, isFmp4Buffer } from "@/lib/stream-proxy/media-buffer";
 
 export const dynamic = "force-dynamic";
 
@@ -47,11 +47,12 @@ function setCachedSegment(url: string, buf: Uint8Array) {
 }
 
 function segmentResponse(buf: Uint8Array) {
+  const isFmp4 = isFmp4Buffer(buf);
   return new NextResponse(buf as unknown as BodyInit, {
     status: 200,
     headers: {
       ...CORS_HEADERS,
-      "Content-Type": "video/mp2t",
+      "Content-Type": isFmp4 ? "video/mp4" : "video/mp2t",
       "Content-Length": buf.length.toString(),
       "Cache-Control": "public, max-age=86400, immutable",
     },
@@ -140,7 +141,9 @@ export async function GET(request: NextRequest) {
 
   let effectiveReferer = referer;
   if (!effectiveReferer) {
-    if (
+    if (targetUrl.includes("hikari") || targetUrl.includes("streamrip.fun") || targetUrl.includes("vidly")) {
+      effectiveReferer = "https://vidly.pro/";
+    } else if (
       targetUrl.includes("megaplay") ||
       targetUrl.includes("broforgotsave") ||
       targetUrl.includes("eclipseharbor") ||

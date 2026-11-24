@@ -25,8 +25,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  Sliders,
+  SlidersHorizontal,
+  Headphones,
+  Search,
+  Upload,
 } from "lucide-react";
 import { formatSecondsToTime, cn } from "@/lib/utils";
+import { normalizeLanguage } from "@/lib/vidly";
+import * as CountryFlags from "country-flag-icons/react/3x2";
 import { SubtitleSettingsDialog, SubtitleStyles } from "./subtitle-settings-dialog";
 import { attachAvSyncGuard } from "./player-core/av-sync-guard";
 import { collectScopedSubtitles } from "./player-core/subtitle-scope";
@@ -37,6 +44,8 @@ export interface SubtitleTrack {
   language: string;
   label: string;
   url: string;
+  countryCode?: string;
+  flag?: string;
   default?: boolean;
 }
 
@@ -70,6 +79,141 @@ export interface VideoSourceData {
   outro?: { start: number; end: number } | null;
   chapters?: Array<{ start: number; end?: number; title: string }>;
   refDuration?: number;
+}
+
+const COUNTRY_CODE_MAP: Record<string, string> = {
+  ja: "JP",
+  jp: "JP",
+  jpn: "JP",
+  en: "GB",
+  eng: "GB",
+  gb: "GB",
+  uk: "GB",
+  us: "US",
+  es: "ES",
+  spa: "ES",
+  fr: "FR",
+  fre: "FR",
+  fra: "FR",
+  de: "DE",
+  ger: "DE",
+  deu: "DE",
+  it: "IT",
+  ita: "IT",
+  pt: "BR",
+  por: "BR",
+  br: "BR",
+  ar: "SA",
+  ara: "SA",
+  sa: "SA",
+  ru: "RU",
+  rus: "RU",
+  pl: "PL",
+  pol: "PL",
+  zh: "CN",
+  chi: "CN",
+  zho: "CN",
+  cn: "CN",
+  ko: "KR",
+  kor: "KR",
+  kr: "KR",
+  hi: "IN",
+  hin: "IN",
+  in: "IN",
+  te: "IN",
+  tel: "IN",
+  ta: "IN",
+  tam: "IN",
+  kn: "IN",
+  kan: "IN",
+  ml: "IN",
+  mal: "IN",
+  fil: "PH",
+  tl: "PH",
+  ph: "PH",
+  id: "ID",
+  ind: "ID",
+  tr: "TR",
+  tur: "TR",
+  th: "TH",
+  tha: "TH",
+  vi: "VN",
+  vie: "VN",
+  vn: "VN",
+  nl: "NL",
+  dut: "NL",
+  nld: "NL",
+  sv: "SE",
+  swe: "SE",
+  se: "SE",
+  no: "NO",
+  nor: "NO",
+  da: "DK",
+  dan: "DK",
+  dk: "DK",
+  fi: "FI",
+  fin: "FI",
+  el: "GR",
+  ell: "GR",
+  gr: "GR",
+  he: "IL",
+  heb: "IL",
+  il: "IL",
+  cs: "CZ",
+  ces: "CZ",
+  cze: "CZ",
+  cz: "CZ",
+  hu: "HU",
+  hun: "HU",
+  ro: "RO",
+  ron: "RO",
+  rum: "RO",
+  ukr: "UA",
+  ua: "UA",
+};
+
+export function LanguageFlag({ countryCode, flag, name }: { countryCode?: string; flag?: string; name?: string }) {
+  const raw = (countryCode || "").toLowerCase().trim();
+  const code = (COUNTRY_CODE_MAP[raw] || raw.toUpperCase()).trim();
+  const FlagComponent = (CountryFlags as any)[code];
+
+  if (FlagComponent) {
+    return (
+      <span className="inline-flex items-center justify-center shrink-0 w-[15px] h-[10px] overflow-hidden rounded-[2px] shadow-[0_0_1px_rgba(0,0,0,0.8)] ring-1 ring-white/10 pointer-events-none">
+        <FlagComponent className="w-full h-full object-cover" />
+      </span>
+    );
+  }
+
+  return (
+    <span className="w-[15px] h-[10px] flex items-center justify-center text-[10px] text-zinc-400 font-mono shrink-0 select-none pointer-events-none">
+      {flag || "🌐"}
+    </span>
+  );
+}
+
+export function deduplicateSubtitleTracks(subtitles: any[]): SubtitleTrack[] {
+  const seenLanguages = new Set<string>();
+  const result: SubtitleTrack[] = [];
+  for (const sub of subtitles) {
+    const rawLang = sub.language || sub.label || "";
+    const norm = normalizeLanguage(rawLang, sub.label);
+    const langKey = norm.code || norm.name.toLowerCase();
+    if (!langKey || seenLanguages.has(langKey)) continue;
+    const u = sub.url || sub.subtitleUrl || sub.file || "";
+    if (!u) continue;
+    seenLanguages.add(langKey);
+    result.push({
+      id: sub.id || `sub-${norm.code}`,
+      language: norm.code,
+      label: norm.name,
+      countryCode: norm.countryCode,
+      flag: norm.flag,
+      url: u,
+      default: sub.default ?? sub.isDefault,
+    });
+  }
+  return result;
 }
 
 export function isNativePlayerSource(s: VideoSourceData): boolean {
@@ -125,7 +269,7 @@ export function EmbedPlayer({
   malId,
   episodeNumber,
   initialAudio = "sub",
-  initialServer = "flow",
+  initialServer = "katana-sub",
   startAt = 0,
   autoskipIntro = true,
   autoskipOutro = true,
@@ -170,6 +314,10 @@ export function EmbedPlayer({
   // HLS & Qualities
   const [hlsLevels, setHlsLevels] = useState<{ index: number; name: string; height: number }[]>([]);
   const [selectedHlsLevel, setSelectedHlsLevel] = useState<number>(-1);
+
+  // Audio Tracks (Katana Sub / Katana Dub / HLS)
+  const [audioTracks, setAudioTracks] = useState<{ id: string; name: string; label: string; lang: string; countryCode?: string; flag?: string }[]>([]);
+  const [activeAudioTrack, setActiveAudioTrack] = useState<string>(initialAudio === "dub" ? "en" : "ja");
 
   // Subtitles
   const [allAvailableSubtitles, setAllAvailableSubtitles] = useState<SubtitleTrack[]>([]);
@@ -238,7 +386,18 @@ export function EmbedPlayer({
   // Settings Menu
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [settingsSubMenu, setSettingsSubMenu] = useState<
-    "main" | "server" | "server-sub" | "server-dub" | "subtitles" | "subtitle-style" | "quality" | "speed" | "boost" | "autoskip"
+    | "main"
+    | "server"
+    | "server-sub"
+    | "server-dub"
+    | "subtitles"
+    | "audio-subtitles"
+    | "subtitle-style"
+    | "quality"
+    | "preferences"
+    | "speed"
+    | "boost"
+    | "autoskip"
   >("main");
   const [menuHeight, setMenuHeight] = useState<number | undefined>(undefined);
   const [menuMaxHeight, setMenuMaxHeight] = useState<number | undefined>(undefined);
@@ -494,9 +653,11 @@ export function EmbedPlayer({
           ? data.allServers
           : [];
 
-        // Build standard 5-provider roster for Sub only (never synthesize fake DUB)
+        // Build standard providers roster
         const idParams = `${anilistId ? `anilistId=${anilistId}&` : ""}${malId ? `malId=${malId}&` : ""}episode=${episodeNumber}`;
         const standardFallbackProviders: VideoSourceData[] = [
+          { id: "katana-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=katana-sub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Sub)" },
+          { id: "katana-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=katana-dub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Dub)" },
           { id: "flow-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow (Sub)" },
           { id: "kitty-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kitty&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kitty (Sub)" },
           { id: "animex-yuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (Sub)" },
@@ -583,16 +744,10 @@ export function EmbedPlayer({
         const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
         let selectedSource: VideoSourceData | undefined;
 
-        if (sNorm.includes("buzz") || sNorm.includes("megaplay")) {
-          selectedSource = allAvailableSources.find((s) => (s.id?.includes("buzz") || s.serverName?.toLowerCase().includes("buzz") || s.id?.includes("megaplay") || s.serverName?.toLowerCase().includes("megaplay")) && typeMatch(s));
-        } else if (sNorm.includes("zuri") || sNorm.includes("zuna")) {
-          selectedSource = allAvailableSources.find((s) => (s.id?.includes("zuri") || s.id?.includes("zuna") || s.serverName?.toLowerCase().includes("zuri")) && typeMatch(s));
-        } else if (sNorm.includes("yuri") || sNorm.includes("yuki")) {
-          selectedSource = allAvailableSources.find((s) => (s.id?.includes("yuri") || s.id?.includes("yuki") || s.serverName?.toLowerCase().includes("yuri")) && typeMatch(s));
-        } else if (sNorm.includes("kitty") || sNorm.includes("flow-2") || sNorm.includes("hd-2")) {
-          selectedSource = allAvailableSources.find((s) => (s.id?.includes("kitty") || s.serverName?.toLowerCase().includes("kitty") || s.id?.includes("flow-2") || s.serverName?.toLowerCase().includes("hd-2")) && typeMatch(s));
-        } else if (sNorm.includes("flow") || sNorm.includes("reanime")) {
-          selectedSource = allAvailableSources.find((s) => (s.id?.includes("flow") || s.serverName?.toLowerCase().includes("flow") || s.id?.includes("reanime") || s.serverName?.toLowerCase().includes("hd-1")) && !s.id?.includes("kitty") && !s.serverName?.toLowerCase().includes("kitty") && typeMatch(s));
+        if (sNorm.includes("dub") || isDub) {
+          selectedSource = allAvailableSources.find((s) => s.type === "DUB") || allAvailableSources.find((s) => s.id?.includes("katana-dub"));
+        } else {
+          selectedSource = allAvailableSources.find((s) => s.type === "SUB") || allAvailableSources.find((s) => s.id?.includes("katana-sub"));
         }
 
         if (!selectedSource && initialStream) {
@@ -637,13 +792,15 @@ export function EmbedPlayer({
           dynamicSubtitles: data.subtitles,
         });
 
-        const mappedSubs: SubtitleTrack[] = scopedSubs.map((s) => ({
-          id: s.id,
-          language: s.language,
-          label: s.label,
-          url: s.subtitleUrl,
-          default: s.isDefault,
-        }));
+        const mappedSubs: SubtitleTrack[] = deduplicateSubtitleTracks(
+          scopedSubs.map((s) => ({
+            id: s.id,
+            language: s.language,
+            label: s.label,
+            url: s.subtitleUrl,
+            default: s.isDefault,
+          }))
+        );
 
         if (mappedSubs.length > 0) {
           setAllAvailableSubtitles(mappedSubs);
@@ -657,6 +814,10 @@ export function EmbedPlayer({
         } else {
           setAllAvailableSubtitles([]);
           setActiveSubtitleTrack("");
+        }
+
+        if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
+          setAudioTracks(data.audioTracks);
         }
 
         postToParent("PLAYER_EVENT", {
@@ -736,6 +897,30 @@ export function EmbedPlayer({
         }));
         setHlsLevels(levels);
 
+        // Extract audio tracks from HLS
+        const updateAudioTracksFromHls = (hlsInst: Hls) => {
+          if (hlsInst.audioTracks && hlsInst.audioTracks.length > 0) {
+            const tracks = hlsInst.audioTracks.map((t, idx) => {
+              const norm = normalizeLanguage(t.lang || "", t.name || "");
+              return {
+                id: norm.code || String(idx),
+                name: norm.name || t.name || `Audio ${idx + 1}`,
+                label: norm.name || t.name || `Audio ${idx + 1}`,
+                lang: norm.code || t.lang || "und",
+                countryCode: norm.countryCode,
+                flag: norm.flag,
+              };
+            });
+            setAudioTracks(tracks);
+            const currentTrackIndex = hlsInst.audioTrack;
+            if (currentTrackIndex >= 0 && tracks[currentTrackIndex]) {
+              setActiveAudioTrack(tracks[currentTrackIndex].id);
+            }
+          }
+        };
+
+        updateAudioTracksFromHls(hls);
+
         if (startPos > 0) {
           video.currentTime = startPos;
         }
@@ -743,6 +928,34 @@ export function EmbedPlayer({
         video.play().catch(() => {
           setIsPlaying(false);
         });
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+        if (hlsRef.current) {
+          const hlsInst = hlsRef.current;
+          if (hlsInst.audioTracks && hlsInst.audioTracks.length > 0) {
+            const tracks = hlsInst.audioTracks.map((t, idx) => {
+              const norm = normalizeLanguage(t.lang || "", t.name || "");
+              return {
+                id: norm.code || String(idx),
+                name: norm.name || t.name || `Audio ${idx + 1}`,
+                label: norm.name || t.name || `Audio ${idx + 1}`,
+                lang: norm.code || t.lang || "und",
+                countryCode: norm.countryCode,
+                flag: norm.flag,
+              };
+            });
+            setAudioTracks(tracks);
+          }
+        }
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
+        if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks[data.id]) {
+          const t = hlsRef.current.audioTracks[data.id];
+          const norm = normalizeLanguage(t.lang || "", t.name || "");
+          setActiveAudioTrack(norm.code || String(data.id));
+        }
       });
 
       hls.on(Hls.Events.BUFFER_APPENDED, () => {
@@ -1271,6 +1484,55 @@ export function EmbedPlayer({
     }
   };
 
+  const handleSelectAudioTrack = (track: { id: string; name: string; lang: string }) => {
+    // 1. Try to switch track inside active HLS instance
+    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > 0) {
+      const matchIdx = hlsRef.current.audioTracks.findIndex((t) => {
+        const norm = normalizeLanguage(t.lang || "", t.name || "");
+        return (
+          norm.code === track.lang ||
+          norm.code === track.id ||
+          norm.name.toLowerCase() === track.name.toLowerCase()
+        );
+      });
+      if (matchIdx >= 0) {
+        hlsRef.current.audioTrack = matchIdx;
+        setActiveAudioTrack(track.id);
+        showToast("success", `Audio: ${track.name}`);
+        return;
+      }
+    }
+
+    // 2. If not found in current HLS, switch to the server providing this audio
+    const isTargetDub =
+      track.id === "en" ||
+      track.name.toLowerCase().includes("english") ||
+      track.name.toLowerCase().includes("dub");
+    const targetSource =
+      sources.find((s) => {
+        if (Array.isArray((s as any).audioTracks)) {
+          return (s as any).audioTracks.some((at: any) => {
+            const norm = normalizeLanguage(at.lang || at.id, at.name || at.label);
+            return (
+              norm.code === track.lang ||
+              norm.code === track.id ||
+              norm.name.toLowerCase() === track.name.toLowerCase()
+            );
+          });
+        }
+        return false;
+      }) ||
+      sources.find((s) => (isTargetDub ? s.type === "DUB" : s.type === "SUB"));
+    if (targetSource && targetSource.id !== currentSource?.id) {
+      handleSelectSource(targetSource);
+      setActiveAudioTrack(track.id);
+      showToast("refreshing", `Switching to ${targetSource.serverName || "Katana"} (${track.name})...`);
+    } else {
+      setActiveAudioTrack(track.id);
+      showToast("info", `Audio: ${track.name}`);
+    }
+  };
+
   // Mobile touch handler: Smart single-tap controls toggle & double-tap seek
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     lastTouchTimeRef.current = Date.now();
@@ -1615,6 +1877,73 @@ export function EmbedPlayer({
   const activeSubLabel =
     activeSubtitleTrack === null ? "Off" : currentSub?.label || (allAvailableSubtitles.length ? allAvailableSubtitles[0].label : "Off");
 
+  // Combined audio tracks gathered from current HLS stream, API payload, and server sources
+  const combinedAudioTracks = useMemo(() => {
+    const list: Array<{ id: string; name: string; label: string; lang: string; countryCode: string; flag: string }> = [];
+    const seen = new Set<string>();
+
+    const addTrack = (rawLang: string, rawName: string) => {
+      const norm = normalizeLanguage(rawLang, rawName);
+      if (!norm.code || seen.has(norm.code)) return;
+      seen.add(norm.code);
+      list.push({
+        id: norm.code,
+        name: norm.name,
+        label: norm.name,
+        lang: norm.code,
+        countryCode: norm.countryCode,
+        flag: norm.flag,
+      });
+    };
+
+    // 1. Current HLS audio tracks
+    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > 0) {
+      for (const t of hlsRef.current.audioTracks) {
+        addTrack(t.lang || "", t.name || "");
+      }
+    }
+
+    // 2. Audio tracks from API state
+    for (const t of audioTracks) {
+      addTrack(t.lang || t.id, t.name || t.label);
+    }
+
+    // 3. Audio tracks from available sources
+    for (const s of sources) {
+      if (Array.isArray((s as any).audioTracks)) {
+        for (const at of (s as any).audioTracks) {
+          addTrack(at.lang || at.id, at.name || at.label);
+        }
+      }
+      if (s.type === "SUB") addTrack("ja", "Japanese");
+      if (s.type === "DUB") addTrack("en", "English");
+    }
+
+    if (list.length === 0) {
+      addTrack("ja", "Japanese");
+      addTrack("en", "English");
+    }
+
+    // Always sort so Japanese and English are at the top, then alphabetically
+    return list.sort((a, b) => {
+      if (a.id === "ja") return -1;
+      if (b.id === "ja") return 1;
+      if (a.id === "en") return -1;
+      if (b.id === "en") return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [audioTracks, sources]);
+
+  const activeAudioLabel = useMemo(() => {
+    const match = combinedAudioTracks.find(
+      (t) =>
+        t.id === activeAudioTrack ||
+        t.lang === activeAudioTrack ||
+        t.name.toLowerCase() === activeAudioTrack.toLowerCase()
+    );
+    return match ? match.name : (selectedType === "dub" ? "English" : "Japanese");
+  }, [combinedAudioTracks, activeAudioTrack, selectedType]);
+
   const currentQualityLabel = (() => {
     if (selectedHlsLevel === -1) {
       if (hlsLevels.length > 0) {
@@ -1627,12 +1956,29 @@ export function EmbedPlayer({
     return found ? found.name : "1080p";
   })();
 
+  const sortedLevels = useMemo(() => {
+    if (hlsLevels.length > 0) {
+      return [...hlsLevels].sort((a, b) => b.height - a.height);
+    }
+    return [
+      { index: 0, name: "1080p", height: 1080 },
+      { index: 1, name: "720p", height: 720 },
+      { index: 2, name: "480p", height: 480 },
+      { index: 3, name: "360p", height: 360 },
+    ];
+  }, [hlsLevels]);
+
   const getSourceProvider = useCallback((src: VideoSourceData) => {
     const sId = (src.id || "").toLowerCase();
     const sName = (src.serverName || "").toLowerCase();
     const sUrl = (src.videoUrl || "").toLowerCase();
 
-    // 0. Buzz from Megaplay
+    // 0. Katana from Vidly
+    if (sId.includes("katana") || sName.includes("katana") || sUrl.includes("katana")) {
+      return "Katana";
+    }
+
+    // 1. Buzz from Megaplay
     if (
       sId.includes("buzz") ||
       sName.includes("buzz") ||
@@ -1644,7 +1990,7 @@ export function EmbedPlayer({
       return "Buzz";
     }
 
-    // 1. Zuri from Extractor
+    // 2. Zuri from Extractor
     if (
       sId.includes("zuri") ||
       sName.includes("zuri") ||
@@ -1656,7 +2002,7 @@ export function EmbedPlayer({
       return "Zuri";
     }
 
-    // 2. Yuri from Extractor
+    // 3. Yuri from Extractor
     if (
       sId.includes("yuri") ||
       sName.includes("yuri") ||
@@ -1668,7 +2014,7 @@ export function EmbedPlayer({
       return "Yuri";
     }
 
-    // 3. Kitty (Flow 2 / HD-2)
+    // 4. Kitty (Flow 2 / HD-2)
     if (
       sId.includes("kitty") ||
       sName.includes("kitty") ||
@@ -1681,19 +2027,17 @@ export function EmbedPlayer({
       return "Kitty";
     }
 
-    // 4. Flow (default for all Re:ANIME / HD-1 / Flow streams)
+    // 5. Flow (default for all Re:ANIME / HD-1 / Flow streams)
     return "Flow";
   }, []);
 
   const sortSourcesByProvider = useCallback((a: VideoSourceData, b: VideoSourceData) => {
-    const SERVER_SORT_ORDER = ["flow", "kitty", "yuri", "zuri", "buzz"];
+    const SERVER_SORT_ORDER = ["katana", "flow", "kitty", "yuri", "zuri", "buzz"];
     const provA = getSourceProvider(a).toLowerCase();
     const provB = getSourceProvider(b).toLowerCase();
     const idxA = SERVER_SORT_ORDER.indexOf(provA);
     const idxB = SERVER_SORT_ORDER.indexOf(provB);
-    const orderA = idxA === -1 ? 99 : idxA;
-    const orderB = idxB === -1 ? 99 : idxB;
-    return orderA - orderB;
+    return (idxA >= 0 ? idxA : 99) - (idxB >= 0 ? idxB : 99);
   }, [getSourceProvider]);
 
   // Native player sources segregated for SUB and DUB
@@ -1713,11 +2057,9 @@ export function EmbedPlayer({
   }, [sources, getSourceProvider, sortSourcesByProvider]);
 
   const nativeDubSources = useMemo<VideoSourceData[]>(() => {
-    // Strictly NO Zuri (Zuri is Japanese SUB ONLY) and filter out upstream audio fallbacks
     const isAuthenticDub = (s: VideoSourceData) => {
       if ((s as any).audio_fallback) return false;
-      const prov = getSourceProvider(s).toLowerCase();
-      return prov !== "zuri";
+      return true;
     };
     const raw = sources.filter((s) => s.type === "DUB" && isNativePlayerSource(s) && isAuthenticDub(s));
     const list = raw.length > 0 ? raw : (sources.some(isNativePlayerSource) ? [] : sources.filter((s) => s.type === "DUB" && isAuthenticDub(s)));
@@ -1760,7 +2102,7 @@ export function EmbedPlayer({
     if (currentSource) {
       return formatServerRouteLabel(currentSource);
     }
-    return selectedType === "dub" ? "Flow (English Dub)" : "Flow (Sub)";
+    return selectedType === "dub" ? "Katana (English Dub)" : "Katana (Sub)";
   }, [currentSource, formatServerRouteLabel, selectedType]);
 
   const handleSelectSource = useCallback((src: VideoSourceData) => {
@@ -1780,15 +2122,15 @@ export function EmbedPlayer({
     }
 
     const prov = getSourceProvider(src).toLowerCase();
-    let srvCode = "flow";
-    if (prov.includes("buzz") || prov.includes("megaplay")) srvCode = "buzz";
-    else if (prov.includes("zuri") || prov.includes("zuna")) srvCode = "zuri";
-    else if (prov.includes("yuri") || prov.includes("yuki")) srvCode = "yuri";
-    else if (prov.includes("kitty") || prov.includes("flow-2") || prov.includes("hd-2")) srvCode = "kitty";
+    const srvCode = prov === "buzz"
+      ? (src.type === "DUB" ? "buzz-dub" : "buzz-sub")
+      : prov === "katana"
+      ? (src.type === "DUB" ? "katana-dub" : "katana-sub")
+      : (src.type === "DUB" ? `${prov}-dub` : prov);
     setServer(srvCode);
 
     // Apply skip times specifically for the newly selected server
-    const isFlowSrc = srvCode === "flow" || srvCode === "kitty";
+    const isFlowSrc = prov === "flow" || prov === "kitty";
     if (src.intro || src.outro) {
       setRawSkipTimes({
         intro: src.intro || null,
@@ -1838,19 +2180,21 @@ export function EmbedPlayer({
       : sources.find((s) => getSourceProvider(s).toLowerCase() === prov && Array.isArray(s.subtitles) && s.subtitles.length > 0)?.subtitles;
 
     if (rawSubsList && rawSubsList.length > 0) {
-      const formattedSubs: SubtitleTrack[] = rawSubsList.map((s: any, idx: number) => {
-        const rawUrl = s.url || s.subtitleUrl || s.file || s.direct_url || s.link || "";
-        const proxySubUrl = rawUrl
-          ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
-          : "";
-        return {
-          id: s.id || `sub-${idx}`,
-          language: s.language || s.lang || "en",
-          label: s.label || s.language || `Subtitle ${idx + 1}`,
-          url: proxySubUrl || rawUrl,
-          default: s.default ?? s.isDefault ?? (idx === 0),
-        };
-      }).filter((s) => Boolean(s.url));
+      const formattedSubs: SubtitleTrack[] = deduplicateSubtitleTracks(
+        rawSubsList.map((s: any, idx: number) => {
+          const rawUrl = s.url || s.subtitleUrl || s.file || s.direct_url || s.link || "";
+          const proxySubUrl = rawUrl
+            ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
+            : "";
+          return {
+            id: s.id || `sub-${idx}`,
+            language: s.language || s.lang || "en",
+            label: s.label || s.language || `Subtitle ${idx + 1}`,
+            url: proxySubUrl || rawUrl,
+            default: s.default ?? s.isDefault ?? (idx === 0),
+          };
+        }).filter((s) => Boolean(s.url))
+      );
 
       if (formattedSubs.length > 0) {
         setAllAvailableSubtitles(formattedSubs);
@@ -1868,21 +2212,23 @@ export function EmbedPlayer({
       .then((r) => r.json())
       .then((data) => {
         if (data?.subtitles && Array.isArray(data.subtitles) && data.subtitles.length > 0) {
-          const fetchedSubs: SubtitleTrack[] = data.subtitles
-            .map((s: any, idx: number) => {
-              const rawUrl = s.url || s.subtitleUrl || s.file || s.direct_url || s.link || "";
-              const proxySubUrl = rawUrl
-                ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
-                : "";
-              return {
-                id: s.id || `sub-${idx}`,
-                language: s.language || s.lang || "en",
-                label: s.label || s.language || `Subtitle ${idx + 1}`,
-                url: proxySubUrl || rawUrl,
-                default: s.default ?? s.isDefault ?? (idx === 0),
-              };
-            })
-            .filter((s: SubtitleTrack) => Boolean(s.url));
+          const fetchedSubs: SubtitleTrack[] = deduplicateSubtitleTracks(
+            data.subtitles
+              .map((s: any, idx: number) => {
+                const rawUrl = s.url || s.subtitleUrl || s.file || s.direct_url || s.link || "";
+                const proxySubUrl = rawUrl
+                  ? (rawUrl.startsWith("/api/proxy") ? rawUrl : `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`)
+                  : "";
+                return {
+                  id: s.id || `sub-${idx}`,
+                  language: s.language || s.lang || "en",
+                  label: s.label || s.language || `Subtitle ${idx + 1}`,
+                  url: proxySubUrl || rawUrl,
+                  default: s.default ?? s.isDefault ?? (idx === 0),
+                };
+              })
+              .filter((s: SubtitleTrack) => Boolean(s.url))
+          );
 
           if (fetchedSubs.length > 0) {
             setAllAvailableSubtitles(fetchedSubs);
@@ -2310,11 +2656,11 @@ export function EmbedPlayer({
                 e.stopPropagation();
                 setFatalError(null);
                 setIsLoading(true);
-                setServer((prev) => (prev === "flow" ? "zuri" : "flow"));
+                setServer((prev) => (prev === "katana-sub" ? "katana-dub" : "katana-sub"));
               }}
               className="px-4 py-2 rounded-full bg-white text-black text-xs font-semibold hover:bg-zinc-200 transition-all shadow-lg active:scale-95 cursor-pointer font-product-sans"
             >
-              Switch to {server === "flow" ? "Zuri" : "Flow"}
+              Switch to {server === "katana-sub" ? "Katana Dub" : "Katana Sub"}
             </button>
             <button
               type="button"
@@ -2858,7 +3204,8 @@ export function EmbedPlayer({
             maxHeight: menuMaxHeight ? `${menuMaxHeight}px` : undefined,
           }}
           className={cn(
-            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 w-[260px] sm:w-[285px] rounded-2xl bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] z-50 text-white transition-[height,transform] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
+            "absolute bottom-[78px] sm:bottom-[86px] right-3 sm:right-4 rounded-2xl bg-zinc-950/65 backdrop-blur-md backdrop-saturate-150 shadow-[0_16px_40px_rgba(0,0,0,0.6),inset_0_1px_1px_rgba(255,255,255,0.22)] z-50 text-white transition-[height,transform,width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] origin-bottom-right overflow-hidden overscroll-contain",
+            settingsSubMenu === "audio-subtitles" ? "w-[290px] sm:w-[325px]" : "w-[260px] sm:w-[285px]",
             menuMaxHeight && menuHeight && menuHeight > menuMaxHeight && "overflow-y-auto player-menu-scrollbar",
             showSettingsMenu ? "scale-100 translate-y-0 pointer-events-auto" : "scale-0 translate-y-4 pointer-events-none"
           )}
@@ -2887,20 +3234,22 @@ export function EmbedPlayer({
                   </div>
                 </button>
 
-                {/* 2. Subtitles */}
+                {/* 2. Audio & Subtitles */}
                 <button
                   type="button"
-                  onClick={() => setSettingsSubMenu("subtitles")}
+                  onClick={() => setSettingsSubMenu("audio-subtitles")}
                   className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
                 >
                   <div className="flex items-center gap-2.5">
                     <div className="w-6 h-6 rounded-lg bg-white/[0.08] flex items-center justify-center text-zinc-300 group-hover:text-white transition-colors">
-                      <Captions className="w-3 h-3" />
+                      <Headphones className="w-3 h-3" />
                     </div>
-                    <span className="text-[11px] font-semibold text-white">Subtitles</span>
+                    <span className="text-[11px] font-semibold text-white">Audio & Subtitles</span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                    <span className="truncate max-w-[95px] font-medium">{activeSubLabel}</span>
+                    <span className="truncate max-w-[110px] font-medium">
+                      {activeAudioLabel} • {activeSubLabel}
+                    </span>
                     <ChevronRight className="w-3 h-3 text-zinc-400" />
                   </div>
                 </button>
@@ -2923,65 +3272,21 @@ export function EmbedPlayer({
                   </div>
                 </button>
 
-                {/* 4. Playback Speed */}
+                {/* 4. Preferences (Speed, Volume Boost, Auto Skip) */}
                 <button
                   type="button"
-                  onClick={() => setSettingsSubMenu("speed")}
+                  onClick={() => setSettingsSubMenu("preferences")}
                   className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
                 >
                   <div className="flex items-center gap-2.5">
                     <div className="w-6 h-6 rounded-lg bg-white/[0.08] flex items-center justify-center text-zinc-300 group-hover:text-white transition-colors">
-                      <PlayCircle className="w-3 h-3" />
+                      <Sliders className="w-3 h-3" />
                     </div>
-                    <span className="text-[11px] font-semibold text-white">Playback Speed</span>
+                    <span className="text-[11px] font-semibold text-white">Preferences</span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
                     <span className="font-medium">
-                      {playbackSpeed === 1 ? "Normal" : `${playbackSpeed}x`}
-                    </span>
-                    <ChevronRight className="w-3 h-3 text-zinc-400" />
-                  </div>
-                </button>
-
-                {/* 5. Volume Boost */}
-                <button
-                  type="button"
-                  onClick={() => setSettingsSubMenu("boost")}
-                  className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-6 h-6 rounded-lg bg-white/[0.08] flex items-center justify-center text-zinc-300 group-hover:text-white transition-colors">
-                      <Volume2 className="w-3 h-3" />
-                    </div>
-                    <span className="text-[11px] font-semibold text-white">Volume Boost</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                    <span className="font-medium">{Math.round(volumeBoost * 100)}%</span>
-                    <ChevronRight className="w-3 h-3 text-zinc-400" />
-                  </div>
-                </button>
-
-                {/* 6. Auto Skip */}
-                <button
-                  type="button"
-                  onClick={() => setSettingsSubMenu("autoskip")}
-                  className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-6 h-6 rounded-lg bg-white/[0.08] flex items-center justify-center text-zinc-300 group-hover:text-white transition-colors">
-                      <Sparkles className="w-3 h-3" />
-                    </div>
-                    <span className="text-[11px] font-semibold text-white">Auto Skip</span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                    <span className="font-medium">
-                      {autoSkipState && autoSkipOutroState
-                        ? "Intro & Outro"
-                        : autoSkipState
-                        ? "Intro"
-                        : autoSkipOutroState
-                        ? "Outro"
-                        : "Off"}
+                      {playbackSpeed}x • {Math.round(volumeBoost * 100)}%
                     </span>
                     <ChevronRight className="w-3 h-3 text-zinc-400" />
                   </div>
@@ -3155,8 +3460,8 @@ export function EmbedPlayer({
               </div>
             )}
 
-            {/* Sub-menu: Subtitles */}
-            {settingsSubMenu === "subtitles" && (
+            {/* Sub-menu: Audio and Subtitles */}
+            {settingsSubMenu === "audio-subtitles" && (
               <div className="animate-in fade-in slide-in-from-right-3 duration-200">
                 <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-1.5">
                   <button
@@ -3166,61 +3471,107 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-semibold text-white">Subtitles</span>
+                  <span className="text-[11px] font-semibold text-white">Audio & Subtitles</span>
                 </div>
 
-                <div className="space-y-0.5 max-h-52 overflow-y-auto pr-1.5 player-menu-scrollbar">
-                  {/* Off Option */}
-                  {activeSubtitleTrack === null ? (
-                    <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white shadow-sm">
-                      <div className="flex items-center gap-2">
-                        <Check className="w-3.5 h-3.5 text-white shrink-0" />
-                        <span>Off</span>
-                      </div>
+                {/* Two-column layout: Left = Audio, Right = Subtitles */}
+                <div className="grid grid-cols-2 divide-x divide-white/10 mb-1">
+                  {/* Left Column: Audio Selection */}
+                  <div className="flex flex-col min-w-0 pr-1.5">
+                    <div className="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-none">
+                      Audio
                     </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveSubtitleTrack(null);
-                        setShowSettingsMenu(false);
-                      }}
-                      className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-[11px] text-zinc-400 hover:text-white transition-colors pl-7 text-left cursor-pointer"
-                    >
-                      <span>Off</span>
-                    </button>
-                  )}
+                    <div className="max-h-[170px] overflow-y-auto overscroll-contain player-menu-scrollbar space-y-0.5 pr-0.5">
+                      {combinedAudioTracks.map((audio) => {
+                        const isSelected =
+                          activeAudioTrack === audio.id ||
+                          activeAudioTrack === audio.lang ||
+                          activeAudioTrack.toLowerCase() === audio.name.toLowerCase();
+                        return (
+                          <button
+                            key={audio.id}
+                            type="button"
+                            onClick={() => handleSelectAudioTrack(audio)}
+                            className={cn(
+                              "w-full flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] transition-colors text-left cursor-pointer group",
+                              isSelected
+                                ? "bg-white/10 border border-white/20 text-white font-medium shadow-xs"
+                                : "text-zinc-400 hover:text-white hover:bg-white/5 border border-transparent"
+                            )}
+                          >
+                            {isSelected ? (
+                              <Check className="w-3 h-3 text-white shrink-0" />
+                            ) : (
+                              <span className="w-3 shrink-0" />
+                            )}
+                            <LanguageFlag countryCode={audio.countryCode} flag={audio.flag} name={audio.name} />
+                            <span className="truncate">{audio.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
 
-                  {/* Subtitle Tracks */}
-                  {allAvailableSubtitles.map((sub, idx) => {
-                    const isSelected = activeSubtitleTrack === (sub.id || sub.url);
-                    return isSelected ? (
-                      <div
-                        key={sub.id || idx}
-                        className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/10 border border-white/15 text-[11px] font-semibold text-white shadow-sm"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Check className="w-3.5 h-3.5 text-white shrink-0" />
-                          <span className="truncate">{sub.label}</span>
-                        </div>
-                      </div>
-                    ) : (
+                  {/* Right Column: Subtitles Selection */}
+                  <div className="flex flex-col min-w-0 pl-1.5">
+                    <div className="px-2 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-400 select-none">
+                      Subtitles
+                    </div>
+                    <div className="max-h-[170px] overflow-y-auto overscroll-contain player-menu-scrollbar space-y-0.5 pr-0.5">
+                      {/* Off Option */}
                       <button
-                        key={sub.id || idx}
                         type="button"
-                        onClick={() => {
-                          setActiveSubtitleTrack(sub.id || sub.url);
-                          setShowSettingsMenu(false);
-                        }}
-                        className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-[11px] text-zinc-400 hover:text-white transition-colors pl-7 text-left cursor-pointer"
+                        onClick={() => setActiveSubtitleTrack(null)}
+                        className={cn(
+                          "w-full flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] transition-colors text-left cursor-pointer group",
+                          activeSubtitleTrack === null
+                            ? "bg-white/10 border border-white/20 text-white font-medium shadow-xs"
+                            : "text-zinc-400 hover:text-white hover:bg-white/5 border border-transparent"
+                        )}
                       >
-                        <span className="truncate">{sub.label}</span>
+                        {activeSubtitleTrack === null ? (
+                          <Check className="w-3 h-3 text-white shrink-0" />
+                        ) : (
+                          <span className="w-3 shrink-0" />
+                        )}
+                        <span className="w-[15px] h-[10px] flex items-center justify-center text-[9px] text-zinc-400 font-mono shrink-0 select-none">✕</span>
+                        <span className="truncate">Off</span>
                       </button>
-                    );
-                  })}
+
+                      {/* Subtitle Tracks (1 per language) */}
+                      {allAvailableSubtitles.map((sub, idx) => {
+                        const isSelected = activeSubtitleTrack === (sub.id || sub.url);
+                        const norm = normalizeLanguage(sub.language, sub.label);
+                        const cCode = sub.countryCode || norm.countryCode;
+                        const flag = sub.flag || norm.flag;
+                        return (
+                          <button
+                            key={sub.id || idx}
+                            type="button"
+                            onClick={() => setActiveSubtitleTrack(sub.id || sub.url)}
+                            className={cn(
+                              "w-full flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] transition-colors text-left cursor-pointer group",
+                              isSelected
+                                ? "bg-white/10 border border-white/20 text-white font-medium shadow-xs"
+                                : "text-zinc-400 hover:text-white hover:bg-white/5 border border-transparent"
+                            )}
+                          >
+                            {isSelected ? (
+                              <Check className="w-3 h-3 text-white shrink-0" />
+                            ) : (
+                              <span className="w-3 shrink-0" />
+                            )}
+                            <LanguageFlag countryCode={cCode} flag={flag} name={sub.label} />
+                            <span className="truncate">{sub.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="border-t border-white/10 pt-1.5 mt-1.5">
+                {/* Subtitle style link at bottom (Cleanly separated from the columns above) */}
+                <div className="border-t border-white/10 mt-2 pt-1.5">
                   <button
                     type="button"
                     onClick={() => setSettingsSubMenu("subtitle-style")}
@@ -3242,7 +3593,7 @@ export function EmbedPlayer({
                 <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-2">
                   <button
                     type="button"
-                    onClick={() => setSettingsSubMenu("subtitles")}
+                    onClick={() => setSettingsSubMenu("audio-subtitles")}
                     className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
@@ -3511,8 +3862,8 @@ export function EmbedPlayer({
                     </button>
                   )}
 
-                  {/* HLS Levels if available */}
-                  {hlsLevels.map((lvl) => {
+                  {/* Quality levels sorted descending (1080p, 720p, 480p, 360p) */}
+                  {sortedLevels.map((lvl) => {
                     const isSelected = selectedHlsLevel === lvl.index;
                     return isSelected ? (
                       <div
@@ -3542,8 +3893,8 @@ export function EmbedPlayer({
               </div>
             )}
 
-            {/* Sub-menu: Playback Speed */}
-            {settingsSubMenu === "speed" && (
+            {/* Sub-menu: Preferences (Speed, Volume Boost, Auto Skip in ONE unified setting) */}
+            {settingsSubMenu === "preferences" && (
               <div className="animate-in fade-in slide-in-from-right-3 duration-200">
                 <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-2">
                   <button
@@ -3553,221 +3904,133 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-semibold text-white">Playback Speed</span>
+                  <span className="text-[11px] font-semibold text-white">Preferences</span>
                 </div>
 
-                <div className="px-1 py-0.5 space-y-2 text-[11px]">
-                  <div className="space-y-1">
-                    {(() => {
-                      const SPEED_STEPS = [
-                        { value: 0.25, percent: 0, label: "0.25x" },
-                        { value: 0.5, percent: 25, label: "0.5x" },
-                        { value: 1.0, percent: 50, label: "1.0x" },
-                        { value: 1.25, percent: 67, label: "1.25x" },
-                        { value: 1.5, percent: 83, label: "1.5x" },
-                        { value: 2.0, percent: 100, label: "2.0x" },
-                      ];
-                      const activeStep =
-                        SPEED_STEPS.find((s) => Math.abs(s.value - playbackSpeed) < 0.01) || SPEED_STEPS[2];
-                      const currentPercent = activeStep.percent;
+                <div className="space-y-3 max-h-[300px] overflow-y-auto px-1 py-0.5 text-[11px] player-menu-scrollbar">
+                  {/* 1. Playback Speed */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-300">
+                      <span className="font-semibold text-[11px] flex items-center gap-1.5">
+                        <PlayCircle className="w-3.5 h-3.5 text-zinc-400" />
+                        Playback Speed
+                      </span>
+                      <span className="text-[10px] text-zinc-400 font-mono font-medium">
+                        {playbackSpeed === 1 ? "Normal" : `${playbackSpeed}x`}
+                      </span>
+                    </div>
 
-                      return (
-                        <>
-                          <div className="relative w-full flex items-center pt-0.5 pb-1">
-                            <input
-                              type="range"
-                              min={0}
-                              max={100}
-                              step={1}
-                              value={currentPercent}
-                              onChange={(e) => {
-                                const raw = parseFloat(e.target.value);
-                                const closest = SPEED_STEPS.reduce((prev, curr) =>
-                                  Math.abs(curr.percent - raw) < Math.abs(prev.percent - raw) ? curr : prev
-                                );
-                                if (videoRef.current) videoRef.current.playbackRate = closest.value;
-                                setPlaybackSpeed(closest.value);
-                              }}
-                              style={{
-                                background: `linear-gradient(to right, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.9) ${currentPercent}%, rgba(255,255,255,0.15) ${currentPercent}%, rgba(255,255,255,0.15) 100%)`,
-                              }}
-                              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-white [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_2px_6px_rgba(0,0,0,0.5)] [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-white/60 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border [&::-moz-range-thumb]:border-white/60 [&::-moz-range-thumb]:cursor-pointer"
-                            />
-                          </div>
-
-                          <div className="relative text-[10px] text-zinc-400 font-medium select-none h-4">
-                            {SPEED_STEPS.map((step) => {
-                              const isSelected = Math.abs(playbackSpeed - step.value) < 0.01;
-                              return (
-                                <button
-                                  key={step.value}
-                                  type="button"
-                                  onClick={() => {
-                                    if (videoRef.current) videoRef.current.playbackRate = step.value;
-                                    setPlaybackSpeed(step.value);
-                                  }}
-                                  className={cn(
-                                    "absolute top-0 -translate-x-1/2 cursor-pointer transition-colors whitespace-nowrap",
-                                    step.percent === 0 && "!translate-x-0",
-                                    step.percent === 100 && "!-translate-x-full",
-                                    isSelected
-                                      ? "text-white font-bold drop-shadow-[0_0_6px_rgba(255,255,255,0.6)]"
-                                      : "text-zinc-500 hover:text-zinc-300"
-                                  )}
-                                  style={{ left: `${step.percent}%` }}
-                                >
-                                  {step.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </>
-                      );
-                    })()}
+                    <div className="grid grid-cols-4 sm:grid-cols-7 gap-1 pt-0.5">
+                      {[0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((spd) => {
+                        const isSelected = Math.abs(playbackSpeed - spd) < 0.01;
+                        return (
+                          <button
+                            key={spd}
+                            type="button"
+                            onClick={() => {
+                              if (videoRef.current) videoRef.current.playbackRate = spd;
+                              setPlaybackSpeed(spd);
+                            }}
+                            className={cn(
+                              "py-1 rounded-md text-[10px] font-medium transition-all text-center cursor-pointer",
+                              isSelected
+                                ? "bg-white text-black font-bold shadow-sm"
+                                : "bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12] hover:text-white"
+                            )}
+                          >
+                            {spd}x
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
 
-            {/* Sub-menu: Volume Boost */}
-            {settingsSubMenu === "boost" && (
-              <div className="animate-in fade-in slide-in-from-right-3 duration-200">
-                <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setSettingsSubMenu("main")}
-                    className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
-                  </button>
-                  <span className="text-[11px] font-semibold text-white">Volume Boost</span>
-                </div>
+                  <div className="h-[1px] bg-white/10" />
 
-                <div className="px-1 py-0.5 space-y-2 text-[11px]">
-                  <div className="space-y-1">
-                    {(() => {
-                      const BOOST_STEPS = [
-                        { value: 0.5, percent: 0, label: "50%" },
-                        { value: 0.75, percent: 17, label: "75%" },
-                        { value: 1.0, percent: 33, label: "100%" },
-                        { value: 1.25, percent: 50, label: "125%" },
-                        { value: 1.5, percent: 67, label: "150%" },
-                        { value: 1.75, percent: 83, label: "175%" },
-                        { value: 2.0, percent: 100, label: "200%" },
-                      ];
-                      const activeStep =
-                        BOOST_STEPS.find((s) => Math.abs(s.value - volumeBoost) < 0.01) || BOOST_STEPS[2];
-                      const currentPercent = activeStep.percent;
+                  {/* 2. Volume Boost */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-zinc-300">
+                      <span className="font-semibold text-[11px] flex items-center gap-1.5">
+                        <Volume2 className="w-3.5 h-3.5 text-zinc-400" />
+                        Volume Boost
+                      </span>
+                      <span className="text-[10px] text-zinc-400 font-mono font-medium">
+                        {Math.round(volumeBoost * 100)}%
+                      </span>
+                    </div>
 
-                      return (
-                        <>
-                          <div className="relative w-full flex items-center pt-0.5 pb-1">
-                            <input
-                              type="range"
-                              min={0}
-                              max={100}
-                              step={1}
-                              value={currentPercent}
-                              onChange={(e) => {
-                                const raw = parseFloat(e.target.value);
-                                const closest = BOOST_STEPS.reduce((prev, curr) =>
-                                  Math.abs(curr.percent - raw) < Math.abs(prev.percent - raw) ? curr : prev
-                                );
-                                handleVolumeBoost(closest.value);
-                              }}
-                              style={{
-                                background: `linear-gradient(to right, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.9) ${currentPercent}%, rgba(255,255,255,0.15) ${currentPercent}%, rgba(255,255,255,0.15) 100%)`,
-                              }}
-                              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-white [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_2px_6px_rgba(0,0,0,0.5)] [&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-white/60 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border [&::-moz-range-thumb]:border-white/60 [&::-moz-range-thumb]:cursor-pointer"
-                            />
-                          </div>
-
-                          <div className="relative text-[9.5px] sm:text-[10px] text-zinc-400 font-medium select-none h-4">
-                            {BOOST_STEPS.map((step) => {
-                              const isSelected = Math.abs(volumeBoost - step.value) < 0.01;
-                              return (
-                                <button
-                                  key={step.value}
-                                  type="button"
-                                  onClick={() => handleVolumeBoost(step.value)}
-                                  className={cn(
-                                    "absolute top-0 -translate-x-1/2 cursor-pointer transition-colors whitespace-nowrap",
-                                    step.percent === 0 && "!translate-x-0",
-                                    step.percent === 100 && "!-translate-x-full",
-                                    isSelected
-                                      ? "text-white font-bold drop-shadow-[0_0_6px_rgba(255,255,255,0.6)]"
-                                      : "text-zinc-500 hover:text-zinc-300"
-                                  )}
-                                  style={{ left: `${step.percent}%` }}
-                                >
-                                  {step.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </>
-                      );
-                    })()}
+                    <div className="grid grid-cols-5 gap-1 pt-0.5">
+                      {[1.0, 1.25, 1.5, 1.75, 2.0].map((bst) => {
+                        const isSelected = Math.abs(volumeBoost - bst) < 0.01;
+                        return (
+                          <button
+                            key={bst}
+                            type="button"
+                            onClick={() => handleVolumeBoost(bst)}
+                            className={cn(
+                              "py-1 rounded-md text-[10px] font-medium transition-all text-center cursor-pointer",
+                              isSelected
+                                ? "bg-white text-black font-bold shadow-sm"
+                                : "bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12] hover:text-white"
+                            )}
+                          >
+                            {Math.round(bst * 100)}%
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
 
-            {/* Sub-menu: Auto Skip */}
-            {settingsSubMenu === "autoskip" && (
-              <div className="animate-in fade-in slide-in-from-right-3 duration-200">
-                <div className="flex items-center gap-2 pb-2 border-b border-white/10 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setSettingsSubMenu("main")}
-                    className="w-6 h-6 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-zinc-300 hover:text-white transition-all cursor-pointer shrink-0"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
-                  </button>
-                  <span className="text-[11px] font-semibold text-white">Auto Skip</span>
-                </div>
+                  <div className="h-[1px] bg-white/10" />
 
-                <div className="space-y-1 pt-0.5">
-                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-white/[0.04] transition-colors">
-                    <span className="text-[11px] font-semibold text-white">Auto Skip Intro</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoSkipState}
-                      onClick={() => setAutoSkipState((p) => !p)}
-                      className={cn(
-                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
-                        autoSkipState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
-                      )}
-                    >
-                      <span
+                  {/* 3. Auto Skip */}
+                  <div className="space-y-2">
+                    <span className="font-semibold text-[11px] text-zinc-300 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-zinc-400" />
+                      Auto Skip
+                    </span>
+
+                    <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white/[0.04]">
+                      <span className="text-[11px] font-medium text-white">Auto Skip Intro</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoSkipState}
+                        onClick={() => setAutoSkipState((p) => !p)}
                         className={cn(
-                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
-                          autoSkipState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                          "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                          autoSkipState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
                         )}
-                      />
-                    </button>
-                  </div>
+                      >
+                        <span
+                          className={cn(
+                            "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                            autoSkipState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                          )}
+                        />
+                      </button>
+                    </div>
 
-                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-white/[0.04] transition-colors">
-                    <span className="text-[11px] font-semibold text-white">Auto Skip Outro</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={autoSkipOutroState}
-                      onClick={() => setAutoSkipOutroState((p) => !p)}
-                      className={cn(
-                        "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
-                        autoSkipOutroState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
-                      )}
-                    >
-                      <span
+                    <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white/[0.04]">
+                      <span className="text-[11px] font-medium text-white">Auto Skip Outro</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={autoSkipOutroState}
+                        onClick={() => setAutoSkipOutroState((p) => !p)}
                         className={cn(
-                          "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
-                          autoSkipOutroState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                          "relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors duration-200 cursor-pointer",
+                          autoSkipOutroState ? "bg-white" : "bg-[#202020] border border-white/[0.08]"
                         )}
-                      />
-                    </button>
+                      >
+                        <span
+                          className={cn(
+                            "inline-block h-2.5 w-2.5 rounded-full shadow-xs transition-transform duration-200",
+                            autoSkipOutroState ? "translate-x-3 bg-black" : "translate-x-0.5 bg-zinc-500"
+                          )}
+                        />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -21,8 +21,12 @@ export function EmbedPageClient({
 }: EmbedPageClientProps) {
   const searchParams = useSearchParams();
 
+  // Check query audio override if present
+  const queryAudio = searchParams.get("audio");
+  const effectiveAudio = (queryAudio === "dub" || propAudio === "dub" ? "dub" : "sub") as "sub" | "dub";
+
   // Query parameter overrides
-  let server = searchParams.get("server") || "flow";
+  let server = searchParams.get("server") || (effectiveAudio === "dub" ? "katana-dub" : "katana-sub");
   const startAtRaw = searchParams.get("startAt") || searchParams.get("progress") || "0";
   const startAt = parseFloat(startAtRaw) || 0;
   const parentHost = searchParams.get("parentHost") || null;
@@ -35,12 +39,8 @@ export function EmbedPageClient({
   const outroParam = searchParams.get("autoskipOutro") ?? searchParams.get("skipOutro");
   const autoskipOutro = outroParam === "0" || outroParam === "off" || outroParam === "false" ? false : true;
 
-  // Check query audio override if present
-  const queryAudio = searchParams.get("audio");
-  const effectiveAudio = (queryAudio === "dub" || propAudio === "dub" ? "dub" : "sub") as "sub" | "dub";
-
-  if (effectiveAudio === "dub" && (server === "zuri" || server === "zuna")) {
-    server = "flow";
+  if (effectiveAudio === "dub" && (server === "katana-sub" || server.includes("sub"))) {
+    server = "katana-dub";
   }
 
   const effectiveAnilistId = propAnilistId

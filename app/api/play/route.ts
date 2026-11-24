@@ -3,8 +3,8 @@ import { findAndStream, getReanimeEpisodeSources, isReanimeCloudflareBlocked } f
 import { resolveAnimexPlayStream, getAnimexEpisodeSources } from "@/lib/aniembed-extractor";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
 import { resolveBuzzStream } from "@/lib/buzz";
-import { getAniSkipTimes } from "@/lib/aniskip";
-
+import { getVidlyKatanaSources, fetchVidlyKatanaSource, VidlyKatanaSource } from "@/lib/vidly";
+import { getAniFlowSkipSummary } from "@/lib/aniskip";
 import { ticketStore } from "@/lib/tickets";
 
 export const dynamic = "force-dynamic";
@@ -30,29 +30,29 @@ async function getAllSourcesCached(
     return cached.data;
   }
 
+  const numericTarget =
+    typeof targetIdentifier === "number"
+      ? targetIdentifier
+      : /^\d+$/.test(String(targetIdentifier))
+      ? parseInt(String(targetIdentifier), 10)
+      : null;
+  const effectiveAniId = anilistId || numericTarget;
+
+  // 1. Re:ANIME (Flow, Yuri)
   const reanimePromise = isReanimeCloudflareBlocked()
     ? Promise.resolve([])
     : getReanimeEpisodeSources(targetIdentifier, episode).catch(() => []);
 
+  // 2. Animex (Kitty, Zuri)
   const animexPromise = anilistId
     ? getAnimexEpisodeSources(anilistId, episode).catch(() => [])
     : Promise.resolve([]);
 
-  const numericTarget = typeof targetIdentifier === "number" ? targetIdentifier : (/^\d+$/.test(String(targetIdentifier)) ? parseInt(String(targetIdentifier), 10) : null);
-  const effectiveAniId = anilistId || numericTarget;
-
+  // 3. Buzz (Buzz Sub & Dub)
   const buzzPromise = effectiveAniId
     ? Promise.all([
-        resolveBuzzStream({
-          anilistId: effectiveAniId,
-          episode,
-          type: "sub",
-        }).catch(() => null),
-        resolveBuzzStream({
-          anilistId: effectiveAniId,
-          episode,
-          type: "dub",
-        }).catch(() => null),
+        resolveBuzzStream({ anilistId: effectiveAniId, episode, type: "sub" }).catch(() => null),
+        resolveBuzzStream({ anilistId: effectiveAniId, episode, type: "dub" }).catch(() => null),
       ])
         .then(([buzzSub, buzzDub]) => {
           const bSources: any[] = [];
@@ -95,12 +95,21 @@ async function getAllSourcesCached(
         .catch(() => [])
     : Promise.resolve([]);
 
-  const [reanimeSources, animexSources, buzzSources] = await Promise.all([
+  // 4. Katana (Vidly Katana Sub & Katana Dub)
+  const katanaPromise = effectiveAniId
+    ? getVidlyKatanaSources(effectiveAniId, episode)
+        .then((res) => res.sources)
+        .catch(() => [])
+    : Promise.resolve([]);
+
+  const [katanaSources, reanimeSources, animexSources, buzzSources] = await Promise.all([
+    katanaPromise,
     reanimePromise,
     animexPromise,
     buzzPromise,
   ]);
-  const all = [...reanimeSources, ...animexSources, ...buzzSources];
+
+  const all = [...katanaSources, ...reanimeSources, ...animexSources, ...buzzSources];
   if (all.length > 0) {
     sourcesCache.set(cacheKey, { data: all, timestamp: Date.now() });
   }
@@ -121,7 +130,7 @@ export async function POST(request: NextRequest) {
     const malId = body.malId || body.mal_id;
     const episode = parseInt(String(body.episode || "1"), 10);
     const audio = (body.audio === "dub" ? "dub" : "sub") as "sub" | "dub";
-    const server = body.server || "flow";
+    const server = body.server || (audio === "dub" ? "katana-dub" : "katana-sub");
     const startAt = body.startAt || body.progress || 0;
 
     const ticket = `vh_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
@@ -164,7 +173,7 @@ export async function GET(request: NextRequest) {
     const episode = parseInt(searchParams.get("episode") || searchParams.get("ep") || "1", 10);
     const dub = searchParams.get("dub") === "true" || searchParams.get("dub") === "1";
     const audio = (searchParams.get("audio") || (dub ? "dub" : "sub")) as "sub" | "dub";
-    const serverParam = (searchParams.get("server") || "flow").toLowerCase();
+    const serverParam = (searchParams.get("server") || "katana-sub").toLowerCase();
     const providerParam = searchParams.get("provider") || searchParams.get("providerId");
     const slugParam = searchParams.get("slug");
     const format = searchParams.get("format");
@@ -208,13 +217,13 @@ export async function GET(request: NextRequest) {
     }
 
     const targetIdentifier = anilistId || title || (malId ? String(malId) : "");
+    const effectiveAniId = anilistId || (typeof targetIdentifier === "number" ? targetIdentifier : (/^\d+$/.test(String(targetIdentifier)) ? parseInt(String(targetIdentifier), 10) : null));
 
-    // Check if AniEmbed / Animex provider was explicitly requested.
-    // Zuri is actually 'zuna' from pp.animex.one extractor and is strictly SUB ONLY (no Dub).
+    const isKatanaParam = serverParam.includes("katana");
     const isZuriParam = serverParam === "zuri" || serverParam === "zuna" || providerParam === "zuri" || providerParam === "zuna";
     const isBuzzParam = serverParam === "buzz" || serverParam === "megaplay" || providerParam === "buzz";
     const isAnimexMode = Boolean(
-      (providerParam && !isZuriParam && !isBuzzParam) ||
+      (providerParam && !isZuriParam && !isBuzzParam && !isKatanaParam) ||
       (audio === "sub" && isZuriParam) ||
       serverParam === "yuri" ||
       serverParam === "yuki" ||
@@ -224,6 +233,30 @@ export async function GET(request: NextRequest) {
 
     // FAST-PATH: If caller is requesting direct .m3u8 stream playback (HLS video element)
     if (wantsM3u8) {
+      // 0. Katana (Vidly)
+      if (isKatanaParam && effectiveAniId) {
+        try {
+          const targetAudio = serverParam.includes("dub") ? "dub" : audio;
+          const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, targetAudio);
+          if (kSrc?.videoUrl) {
+            return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
+              status: 302,
+              headers: CORS_HEADERS,
+            });
+          }
+          if (targetAudio === "dub") {
+            const kSub = await fetchVidlyKatanaSource(effectiveAniId, episode, "sub");
+            if (kSub?.videoUrl) {
+              return NextResponse.redirect(new URL(kSub.videoUrl, baseUrl).href, {
+                status: 302,
+                headers: CORS_HEADERS,
+              });
+            }
+          }
+        } catch {}
+      }
+
+      // 1. Buzz
       if (isBuzzParam && (anilistId || malId)) {
         try {
           const buzz = await resolveBuzzStream({
@@ -241,6 +274,7 @@ export async function GET(request: NextRequest) {
         } catch {}
       }
 
+      // 2. Animex (Yuri & Zuri)
       if (isAnimexMode && anilistId) {
         try {
           const animex = await resolveAnimexPlayStream({
@@ -268,7 +302,7 @@ export async function GET(request: NextRequest) {
         serverParam.includes("hd-2") ||
         serverParam === "hd2";
 
-      // Query Flow (Re:ANIME)
+      // 3. Flow (Re:ANIME)
       const flowServer = isFlow2Req ? "HD-2" : serverParam.includes("hd-1") || serverParam.includes("flow1") || serverParam === "hd1" ? "HD-1" : "all";
 
       const flowData = isReanimeCloudflareBlocked()
@@ -294,17 +328,12 @@ export async function GET(request: NextRequest) {
         });
       }
 
-      // Last fallback: Animex
-      if (anilistId) {
+      // 4. Fallback to Katana
+      if (effectiveAniId) {
         try {
-          const animex = await resolveAnimexPlayStream({
-            anilistId,
-            episode,
-            type: audio,
-            title: title || undefined,
-          });
-          if (animex?.proxyM3u8) {
-            return NextResponse.redirect(new URL(animex.proxyM3u8, baseUrl).href, {
+          const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, audio);
+          if (kSrc?.videoUrl) {
+            return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
               status: 302,
               headers: CORS_HEADERS,
             });
@@ -339,12 +368,61 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Helper to resolve stream for requested provider concurrently
+    // Concurrently resolve all streams & skip times
     const resolveStreamTask = async () => {
       let result: any = null;
       let resolvedServerName = serverParam;
 
-      if (isAnimexMode && anilistId) {
+      // 1. Katana from Vidly
+      let katanaSourcesList: VidlyKatanaSource[] = [];
+      if (effectiveAniId) {
+        try {
+          const katanaRes = await getVidlyKatanaSources(effectiveAniId, episode);
+          katanaSourcesList = katanaRes.sources;
+        } catch {}
+      }
+
+      const allServersFormatted: any[] = [...katanaSourcesList];
+
+      if (isKatanaParam && katanaSourcesList.length > 0) {
+        const wantsDub = audio === "dub" || serverParam.includes("dub");
+        const dubSrc = katanaSourcesList.find((s) => s.type === "DUB");
+        const subSrc = katanaSourcesList.find((s) => s.type === "SUB") || katanaSourcesList[0];
+        const activeKatana = (wantsDub && dubSrc) ? dubSrc : subSrc;
+        const isAudioFallback = wantsDub && !dubSrc;
+        resolvedServerName = activeKatana.serverName;
+
+        // Merge all distinct audio tracks across Katana sources so all languages are visible
+        const combinedKatanaAudio: any[] = [];
+        const seenKatanaAudio = new Set<string>();
+        for (const ks of katanaSourcesList) {
+          for (const at of ks.audioTracks || []) {
+            if (!seenKatanaAudio.has(at.id)) {
+              seenKatanaAudio.add(at.id);
+              combinedKatanaAudio.push(at);
+            }
+          }
+        }
+
+        result = {
+          server: "Katana",
+          serverName: activeKatana.serverName,
+          provider: "katana",
+          audio: activeKatana.type === "DUB" ? "dub" : "sub",
+          m3u8: activeKatana.videoUrl,
+          fullM3u8: activeKatana.videoUrl.startsWith("http") ? activeKatana.videoUrl : `${baseUrl}${activeKatana.videoUrl}`,
+          audioTracks: combinedKatanaAudio.length > 0 ? combinedKatanaAudio : (activeKatana.audioTracks || []),
+          subtitles: activeKatana.subtitles || [],
+          intro: null,
+          outro: null,
+          chapters: [],
+          hasDub: Boolean(dubSrc),
+          audio_fallback: isAudioFallback,
+        };
+      }
+
+      // 2. Animex if requested
+      if (isAnimexMode && anilistId && !result) {
         try {
           const animex = await resolveAnimexPlayStream({
             anilistId,
@@ -399,19 +477,14 @@ export async function GET(request: NextRequest) {
         ? getAnimexEpisodeSources(anilistId, episode).catch(() => [])
         : Promise.resolve([]);
 
-      const aniSkipPromise = (anilistId || malId)
-        ? getAniSkipTimes({
-            animeId: anilistId || String(malId),
-            episodeNumber: episode,
-            isMalId: Boolean(malId && !anilistId),
-          }).catch(() => null)
+      const aniSkipPromise = effectiveAniId
+        ? getAniFlowSkipSummary({ animeId: effectiveAniId, episodeNumber: episode }).catch(() => null)
         : Promise.resolve(null);
 
-      const effectiveAniId = anilistId ? parseInt(String(anilistId), 10) : (malId ? parseInt(String(malId), 10) : null);
       const buzzSubPromise = effectiveAniId
         ? resolveBuzzStream({
-            anilistId: anilistId ? parseInt(String(anilistId), 10) : undefined,
-            malId: malId ? parseInt(String(malId), 10) : undefined,
+            anilistId: effectiveAniId,
+            malId: malId || undefined,
             episode,
             type: "sub",
           }).catch(() => null)
@@ -419,8 +492,8 @@ export async function GET(request: NextRequest) {
 
       const buzzDubPromise = effectiveAniId
         ? resolveBuzzStream({
-            anilistId: anilistId ? parseInt(String(anilistId), 10) : undefined,
-            malId: malId ? parseInt(String(malId), 10) : undefined,
+            anilistId: effectiveAniId,
+            malId: malId || undefined,
             episode,
             type: "dub",
           }).catch(() => null)
@@ -434,16 +507,8 @@ export async function GET(request: NextRequest) {
         buzzDubPromise,
       ]);
 
-      let aniSkipIntro: { start: number; end: number } | null = null;
-      let aniSkipOutro: { start: number; end: number } | null = null;
-      if (aniSkipData?.found && Array.isArray(aniSkipData.results)) {
-        const op = aniSkipData.results.find((r: any) => r.skipType === "op" || r.skipType === "mixed-op" || r.skipType === "recap");
-        const ed = aniSkipData.results.find((r: any) => r.skipType === "ed" || r.skipType === "mixed-ed");
-        if (op) aniSkipIntro = { start: Math.round(op.interval.startTime), end: Math.round(op.interval.endTime) };
-        if (ed) aniSkipOutro = { start: Math.round(ed.interval.startTime), end: Math.round(ed.interval.endTime) };
-      }
-
-      const allServersFormatted: any[] = [];
+      const aniSkipIntro = aniSkipData?.intro || null;
+      const aniSkipOutro = aniSkipData?.outro || null;
 
       const anyFlowIntro = flowData?.intro || (flowData?.all_servers || []).find((s: any) => s.intro)?.intro || null;
       const anyFlowOutro = flowData?.outro || (flowData?.all_servers || []).find((s: any) => s.outro)?.outro || null;
@@ -476,7 +541,7 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // 1. Process Re:ANIME / Flow servers
+      // Process Re:ANIME / Flow servers
       const flowHasDub = Boolean(flowData?.has_dub && !flowData?.audio_fallback);
       if (flowData?.hls) {
         const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
@@ -559,7 +624,7 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // 2. Add Animex (Yuri & Zuri)
+      // Add Animex (Yuri & Zuri)
       if (Array.isArray(animexSourcesList) && animexSourcesList.length > 0) {
         for (const as of animexSourcesList) {
           if (!allServersFormatted.some((s) => s.id === as.id)) {
@@ -584,7 +649,7 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // 3. Add Buzz (Sub and Dub if available)
+      // Add Buzz (Sub and Dub if available)
       if (buzzSubData?.m3u8 && !allServersFormatted.some((s) => s.id === "buzz-sub")) {
         allServersFormatted.push({
           id: "buzz-sub",
@@ -624,15 +689,17 @@ export async function GET(request: NextRequest) {
         });
       }
 
-      // Guarantee standard providers exist in allServersFormatted (Flow, Kitty, Yuri, Zuri, Buzz)
+      // Guarantee all standard providers exist in allServersFormatted (Katana, Flow, Kitty, Yuri, Zuri, Buzz)
       const flowDubAvailable = flowHasDub && allServersFormatted.some((s) => s.server === "Flow" && s.type === "DUB");
       const kittyDubAvailable = flowHasDub && allServersFormatted.some((s) => s.server === "Kitty" && s.type === "DUB");
       const yuriDubAvailable = (Array.isArray(animexSourcesList) ? animexSourcesList : []).some(
         (s) => s.type === "DUB" && (s.id?.includes("yuri") || s.serverName?.toLowerCase().includes("yuri"))
       );
       const buzzDubAvailable = Boolean(buzzDubData?.m3u8);
+      const katanaDubAvailable = katanaSourcesList.some((s) => s.type === "DUB");
 
       const standardProviders = [
+        { prov: "Katana", srv: "katana", subId: "katana-sub", dubId: "katana-dub", canDub: katanaDubAvailable },
         { prov: "Flow", srv: "flow", subId: "flow-sub", dubId: "flow-dub", canDub: flowDubAvailable },
         { prov: "Kitty", srv: "kitty", subId: "kitty-sub", dubId: "kitty-dub", canDub: kittyDubAvailable },
         { prov: "Yuri", srv: "yuri", subId: "animex-yuri-sub", dubId: "animex-yuri-dub", canDub: yuriDubAvailable },
@@ -706,178 +773,49 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // 8. Fallback to Animex resolveAnimexPlayStream if all above failed
-      if (!result && anilistId) {
-        try {
-          const animex = await resolveAnimexPlayStream({
-            anilistId,
-            episode,
-            type: audio,
-            title: title || undefined,
-          });
-
-          if (animex?.proxyM3u8) {
-            const provNorm = (animex.provider || "").toLowerCase();
-            const provName = provNorm === "yuki" || provNorm === "yuri" ? "Yuri" : provNorm === "zuna" || provNorm === "zuri" ? "Zuri" : animex.provider;
-            resolvedServerName = provName;
-            result = {
-              server: provName,
-              serverName: `${provName} (${audio === "dub" ? "English Dub" : "Sub"})`,
-              provider: animex.provider,
-              audio: animex.type,
-              m3u8: animex.proxyM3u8,
-              fullM3u8: `${baseUrl}${animex.proxyM3u8}`,
-              subtitles: animex.subtitles || [],
-              chapters: animex.chapters,
-            };
-          }
-        } catch (animexErr: any) {
-          console.warn("[/api/play] Animex fallback notice:", animexErr?.message || animexErr);
+      // Fallback: If no server result yet, pick matching from allServersFormatted
+      if (!result && allServersFormatted.length > 0) {
+        const match = allServersFormatted.find((s) => s.type === (audio === "dub" ? "DUB" : "SUB")) || allServersFormatted[0];
+        if (match?.videoUrl) {
+          resolvedServerName = match.serverName || match.server;
+          const isFallback = audio === "dub" && match.type !== "DUB";
+          result = {
+            server: match.server || resolvedServerName,
+            serverName: match.serverName || resolvedServerName,
+            audio: isFallback ? "sub" : (match.type?.toLowerCase() || audio),
+            m3u8: match.videoUrl,
+            fullM3u8: match.videoUrl.startsWith("http") ? match.videoUrl : `${baseUrl}${match.videoUrl}`,
+            audioTracks: match.audioTracks || [],
+            subtitles: match.subtitles || [],
+            intro: match.intro || aniSkipIntro,
+            outro: match.outro || aniSkipOutro,
+            chapters: match.chapters || [],
+            refDuration: match.refDuration || 1440,
+            allServers: allServersFormatted,
+            hasDub: allServersFormatted.some((s) => s.type === "DUB"),
+            audio_fallback: isFallback,
+          };
         }
       }
 
-      // Match target server if explicitly requested
-      if (allServersFormatted.length > 0) {
-        const targetServerNorm = serverParam.toLowerCase().replace(/[\s_-]/g, "");
-        if (targetServerNorm && targetServerNorm !== "all") {
-          const matchingRequested = allServersFormatted.find((s) => {
-            const sId = (s.id || "").toLowerCase().replace(/[\s_-]/g, "");
-            const sName = (s.server || s.name || "").toLowerCase().replace(/[\s_-]/g, "");
-            const matchAudio = s.type === (audio === "dub" ? "DUB" : "SUB");
-            if (!matchAudio) return false;
-            const isKittyReq = targetServerNorm.includes("kitty") || targetServerNorm.includes("flow2") || targetServerNorm.includes("hd2");
-            if (isKittyReq) {
-              return sId.includes("kitty") || sName.includes("kitty") || sId.includes("flow-2") || sName.includes("flow 2") || sName.includes("hd-2");
-            }
-            if (targetServerNorm.includes("buzz") || targetServerNorm.includes("megaplay")) {
-              return sId.includes("buzz") || sName.includes("buzz") || sId.includes("megaplay") || sName.includes("megaplay");
-            }
-            if (targetServerNorm.includes("zuri") || targetServerNorm.includes("zuna")) {
-              return sId.includes("zuri") || sName.includes("zuri") || sId.includes("zuna") || sName.includes("zuna");
-            }
-            if (targetServerNorm.includes("yuri") || targetServerNorm.includes("yuki")) {
-              return sId.includes("yuri") || sName.includes("yuri") || sId.includes("yuki") || sName.includes("yuki");
-            }
-            if (targetServerNorm.includes("flow") || targetServerNorm.includes("reanime")) {
-              return (sId.includes("flow") || sName.includes("flow") || sName.includes("hd-1") || sId.includes("reanime")) && !sId.includes("kitty") && !sName.includes("kitty") && !sId.includes("2");
-            }
-            return sId.includes(targetServerNorm) || sName.includes(targetServerNorm);
-          }) || allServersFormatted.find((s) => {
-            const sId = (s.id || "").toLowerCase().replace(/[\s_-]/g, "");
-            const sName = (s.server || s.name || "").toLowerCase().replace(/[\s_-]/g, "");
-            return (
-              sId.includes(targetServerNorm) ||
-              sName.includes(targetServerNorm) ||
-              targetServerNorm.includes(sName)
-            );
-          });
-
-          if (matchingRequested?.videoUrl) {
-            resolvedServerName = matchingRequested.server || matchingRequested.name;
-            const isResolvedFlow = resolvedServerName.toLowerCase().includes("flow") || resolvedServerName.toLowerCase().includes("kitty") || resolvedServerName.toLowerCase().includes("hd");
-            const serverIntro = isResolvedFlow
-              ? (matchingRequested.intro || anyFlowIntro || flowData?.intro || aniSkipIntro)
-              : (matchingRequested.intro || aniSkipIntro);
-            const serverOutro = isResolvedFlow
-              ? (matchingRequested.outro || anyFlowOutro || flowData?.outro || aniSkipOutro)
-              : (matchingRequested.outro || aniSkipOutro);
-            const serverChapters = isResolvedFlow
-              ? (matchingRequested.chapters || anyFlowChapters || flowData?.chapters || [])
-              : [];
-
-            // Preserve resolved subtitles if already fetched, or fallback to matchingRequested
-            const rawSubs = (result?.subtitles && result.subtitles.length > 0)
-              ? result.subtitles
-              : (matchingRequested.subtitles || []);
-
-            const normalizedSubs = rawSubs.map((sub: any, idx: number) => {
-              const rawUrl = sub.url || sub.subtitleUrl || sub.file || sub.direct_url || "";
-              const proxyUrl = rawUrl.startsWith("/api/proxy")
-                ? rawUrl
-                : rawUrl
-                ? `/api/proxy/subtitles?url=${encodeURIComponent(rawUrl)}`
-                : "";
-              const finalUrl = proxyUrl || rawUrl;
-              return {
-                language: sub.language || sub.lang || sub.label || "English",
-                label: sub.label || sub.language || `Subtitle ${idx + 1}`,
-                url: finalUrl,
-                subtitleUrl: finalUrl,
-                direct_url: sub.direct_url || rawUrl,
-                default: sub.default !== undefined ? sub.default : (sub.isDefault !== undefined ? sub.isDefault : idx === 0),
-              };
-            });
-
-            matchingRequested.subtitles = normalizedSubs;
-
-            const chosenStream = (result?.m3u8 && !result.m3u8.includes("format=m3u8"))
-              ? result.m3u8
-              : matchingRequested.videoUrl;
-
-            result = {
-              server: resolvedServerName,
-              serverName: matchingRequested.serverName || resolvedServerName,
-              audio: matchingRequested.audio || audio,
-              m3u8: chosenStream,
-              fullM3u8: chosenStream.startsWith("http") ? chosenStream : `${baseUrl}${chosenStream}`,
-              subtitles: normalizedSubs,
-              intro: serverIntro,
-              outro: serverOutro,
-              chapters: serverChapters,
-              refDuration: matchingRequested.refDuration || (flowData?.refDuration || 1440),
-              allServers: allServersFormatted,
-              hasDub: result?.hasDub,
-              audio_fallback: result?.audio_fallback,
-            };
-          }
-        }
-      }
-
-      if (result && (!result.allServers || result.allServers.length === 0)) {
-        result.allServers = allServersFormatted;
-      }
-
-      return { result, resolvedServerName, allServersFormatted };
+      return {
+        result,
+        resolvedServerName,
+        allSources: allServersFormatted,
+      };
     };
 
-    // 1. FAST-PATH: Resolve stream FIRST with highest priority (zero delay!)
-    const streamResolution = await resolveStreamTask();
-    let streamResult = streamResolution.result;
-    let resolvedServer = streamResolution.resolvedServerName;
-    const formattedServers = streamResolution.allServersFormatted || [];
+    const { result, resolvedServerName, allSources } = await resolveStreamTask();
+    let streamResult = result;
+    let resolvedServer = resolvedServerName;
 
-    // 5. Source list retrieval (Fast & non-blocking!)
-    let allSources: any[] = formattedServers.length > 0 ? [...formattedServers] : [];
-    const cachedSources = sourcesCache.get(`${targetIdentifier}_ep${episode}`);
-
-    if (cachedSources && Date.now() - cachedSources.timestamp < SOURCES_CACHE_TTL) {
-      for (const cs of cachedSources.data) {
-        if (!allSources.some((s) => s.id === cs.id || s.videoUrl === cs.videoUrl)) {
-          allSources.push(cs);
-        }
-      }
-    } else if (!streamResult && allSources.length === 0) {
-      // Only wait for scrapers if we literally have zero streams available
-      const fetched = await Promise.race([
-        getAllSourcesCached(targetIdentifier, anilistId, episode, title),
-        new Promise<any[]>((res) => setTimeout(() => res([]), 2500)),
-      ]);
-      if (fetched.length > 0) {
-        allSources = fetched;
-      }
-    } else {
-      // Stream is already ready! Run background scraper so subsequent requests are enriched without client delay.
-      getAllSourcesCached(targetIdentifier, anilistId, episode, title).catch(() => {});
-    }
-
-    // Check if any genuine DUB source exists across all discovered providers
     const hasAnyAuthenticDub = allSources.some((s: any) => s.type === "DUB" && !s.audio_fallback);
 
     if (allSources.length > 0) {
       sourcesCache.set(`${targetIdentifier}_ep${episode}`, { data: allSources, timestamp: Date.now() });
     }
 
-    // 6. Last-resort fallback: If streamResult is still null, take any available source from allSources
+    // Last-resort fallback: If streamResult is still null, take any available source from allSources
     if (!streamResult && allSources.length > 0) {
       const matchAudio = allSources.find((s: any) => s.type === (audio === "dub" ? "DUB" : "SUB")) || allSources[0];
       if (matchAudio?.videoUrl) {
@@ -889,6 +827,7 @@ export async function GET(request: NextRequest) {
           audio: isFallback ? "sub" : (matchAudio.type?.toLowerCase() || audio),
           m3u8: matchAudio.videoUrl,
           fullM3u8: matchAudio.videoUrl.startsWith("http") ? matchAudio.videoUrl : `${baseUrl}${matchAudio.videoUrl}`,
+          audioTracks: matchAudio.audioTracks || [],
           subtitles: matchAudio.subtitles || [],
           intro: matchAudio.intro || null,
           outro: matchAudio.outro || null,
@@ -897,30 +836,6 @@ export async function GET(request: NextRequest) {
           audio_fallback: isFallback,
         };
       }
-    }
-
-    // 7. Ultimate self-healing fallback: never crash or return 404 if anilistId is known!
-    if (!streamResult && anilistId) {
-      const isFallback = audio === "dub" && !hasAnyAuthenticDub;
-      const effectiveReqAudio = isFallback ? "sub" : audio;
-      const fallbackProxy = `/api/play?anilistId=${anilistId}&episode=${episode}&audio=${effectiveReqAudio}&server=flow&format=m3u8`;
-      resolvedServer = "Flow";
-      streamResult = {
-        server: "Flow",
-        serverName: `Flow (${effectiveReqAudio === "dub" ? "English Dub" : "Sub"})`,
-        audio: effectiveReqAudio,
-        m3u8: fallbackProxy,
-        fullM3u8: `${baseUrl}${fallbackProxy}`,
-        subtitles: [],
-        allServers: allSources.length > 0 ? allSources : null,
-        hasDub: hasAnyAuthenticDub,
-        audio_fallback: isFallback,
-      };
-    }
-
-    // Ensure allServers is attached to streamResult whenever available
-    if (streamResult && (!streamResult.allServers || streamResult.allServers.length === 0) && allSources.length > 0) {
-      streamResult.allServers = allSources;
     }
 
     if (!streamResult) {
@@ -939,13 +854,6 @@ export async function GET(request: NextRequest) {
         },
         { status: 404, headers: CORS_HEADERS }
       );
-    }
-
-    if (wantsM3u8) {
-      return NextResponse.redirect(new URL(streamResult.m3u8, baseUrl).href, {
-        status: 302,
-        headers: CORS_HEADERS,
-      });
     }
 
     const finalHasDub = Boolean(streamResult.hasDub ?? hasAnyAuthenticDub);
@@ -979,6 +887,7 @@ export async function GET(request: NextRequest) {
             ? `/api/m3u8/mal/${malId}/${episode}/${streamResult.audio || audio}`
             : `/api/m3u8?q=${encodeURIComponent(title)}&ep=${episode}&audio=${streamResult.audio || audio}`
         }`,
+        audioTracks: streamResult.audioTracks || [],
         subtitles: streamResult.subtitles || [],
         intro: streamResult.intro || null,
         outro: streamResult.outro || null,
@@ -990,6 +899,7 @@ export async function GET(request: NextRequest) {
       { status: 200, headers: CORS_HEADERS }
     );
   } catch (err: any) {
+    console.error("[/api/play] Error resolving playback source:", err);
     return NextResponse.json(
       {
         success: false,

@@ -113,7 +113,9 @@ export async function GET(request: NextRequest) {
 
     let effectiveReferer = referer;
     if (!effectiveReferer) {
-      if (targetUrl.includes("flixcloud") || targetUrl.includes("atomic4cdn")) {
+      if (targetUrl.includes("hikari") || targetUrl.includes("streamrip.fun") || targetUrl.includes("vidly")) {
+        effectiveReferer = "https://vidly.pro/";
+      } else if (targetUrl.includes("flixcloud") || targetUrl.includes("atomic4cdn")) {
         effectiveReferer = "https://flixcloud.cc/";
       } else if (targetUrl.includes("animeparadise")) {
         effectiveReferer = "https://animeparadise.moe/";

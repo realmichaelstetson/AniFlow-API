@@ -24,13 +24,14 @@ AniFlow is a self-hostable backend and player for embedding anime on your own si
 
 Key points:
 
-- **Five servers** (`Flow`, `Kitty`, `Yuri`, `Zuri`, `Buzz`) with per-request server selection.
+- **Six redundant servers** (`Katana`, `Flow`, `Kitty`, `Yuri`, `Zuri`, `Buzz`) with per-request server selection.
+- **Multi-audio HLS streaming:** Multi-language audio tracks (Japanese, English, Spanish, French, German, Italian, Portuguese, Russian, Hindi, Tamil, Telugu, Kannada, Malayalam, etc.) selectable with vector country flags.
 - **Direct HLS endpoints** at `/meu8/ani/...` and `/meu8/mal/...`, usable from VLC, mpv, ExoPlayer, AVPlayer or a plain `<video>` tag.
-- **Dub verification.** Servers that silently fall back to Japanese audio are excluded from the dub list.
-- **AniList and MyAnimeList IDs** are both supported (`/embed/ani/...`, `/embed/mal/...`).
-- **Intro/outro skipping** using Re:ANIME timestamps and the AniSkip API, adjusted for episode duration.
-- **Subtitle proxy** with up to 16 languages. The selected track persists when you switch servers.
-- **Dark, minimal player** with a two-way `postMessage` interface for telemetry and remote control.
+- **Dub verification:** Servers that silently fall back to Japanese audio are excluded from the dub list.
+- **Dual ID resolution:** AniList and MyAnimeList IDs are both supported (`/embed/ani/...`, `/embed/mal/...`).
+- **Intro/outro skipping:** Op/ED timestamps using Re:ANIME timestamps and the AniSkip API, adjusted for episode duration.
+- **Multilingual subtitle proxy:** Clean single-track-per-language subtitles with country flags and styling customization. The selected track carries over across server changes.
+- **Liquid glass player:** Floating controls with a unified **Audio & Subtitles** selector, consolidated **Preferences** panel, and two-way `postMessage` bus for remote control.
 
 ---
 
@@ -38,32 +39,37 @@ Key points:
 
 | Server | Upstream | Audio | Notes |
 | :--- | :--- | :--- | :--- |
-| **Flow** | Re:ANIME (HD-1) | `SUB`, `DUB` | Primary server. Uses Re:ANIME's own OP/ED timestamps. |
-| **Kitty** | Re:ANIME (HD-2) | `SUB`, `DUB` | Backup mirror for Flow, with the same skip-time support. |
-| **Yuri** | AniEmbed Core | `SUB`, `DUB` | Soft subtitles, up to 16 external languages. |
-| **Zuri** | AniEmbed Zuna | `SUB` only | Japanese-audio backup. |
-| **Buzz** | MegaPlay Buzz | `SUB`, `DUB` | Served through the edge `.m3u8` proxy, with key handling. |
+| **Katana** | Vidly (Hikari) | `SUB`, `DUB`, `MULTI` | High-performance multi-audio engine supporting Japanese, English, European dubs, and Indian regional dubs. |
+| **Flow** | Re:ANIME (HD-1) | `SUB`, `DUB` | Primary server. Uses Re:ANIME's native OP/ED timestamps. |
+| **Kitty** | Re:ANIME (HD-2) | `SUB`, `DUB` | Backup mirror for Flow, with identical skip-time support. |
+| **Yuri** | AniEmbed Core | `SUB`, `DUB` | Soft subtitles with up to 16 external languages. |
+| **Zuri** | AniEmbed Zuna | `SUB` only | Japanese-audio backup stream. |
+| **Buzz** | MegaPlay Buzz | `SUB`, `DUB` | Served through the edge `.m3u8` proxy with dynamic key handling. |
 
 ### Dub verification
 
 Some providers return the original Japanese audio when an English dub doesn't exist for an episode, without any indication. AniFlow checks for this at both the API and player level:
 
-- Audio streams are inspected before they are returned.
-- A server that falls back to Japanese audio is left out of the dub list.
-- If an anime has no English dub at all, the Dub option is disabled and the player switches to Sub with a notification.
+- Audio streams are inspected before presentation.
+- A server that falls back to Japanese audio is excluded from the dub list.
+- If an anime has no English dub at all, the Dub option is disabled and the player automatically selects Sub with an informative notification.
 
 ---
 
 ## Player
 
-- **Interface:** blurred floating controls and a minimal layout. Controls hide during playback.
-- **Skip intro/outro:** OP and ED segments are marked on the timeline. Skipping can be automatic or triggered with a button. Flow and Kitty use native Re:ANIME timestamps; Yuri, Zuri and Buzz use AniSkip with duration compensation.
-- **Subtitles:** up to 16 languages (English, Spanish, French, German, Italian, Portuguese, Polish, Russian and more). The chosen track carries over when you change servers. Font (Sans, Anime, Serif, Mono), size, color, background opacity and outline are adjustable.
-- **Audio and video:**
-  - Volume boost up to 200% via the Web Audio API.
-  - Playback speed from 0.25x to 2.0x.
-  - Adaptive bitrate, or a fixed resolution (1080p, 720p, 480p, 360p).
-- **Mobile:** tap to toggle controls, double-tap left or right to seek ±10 s, and automatic landscape lock in fullscreen.
+- **Liquid glass design:** Dark minimalist interface crafted with blurred glass cards, clean borders, and smooth transitions. Controls automatically hide during playback.
+- **Unified Audio & Subtitles menu:**
+  - **Audio (Left column):** Select between all available audio tracks (Japanese, English, Spanish, German, French, Italian, Portuguese, Hindi, etc.) with vector country flags. Dynamically switches audio tracks in HLS on-the-fly, or seamlessly migrates to the matching Katana server.
+  - **Subtitles (Right column):** Select subtitles per language with flags. Single unique track per language, persisted in local storage.
+  - Independent smooth scrollbars with clean containment lines that never overlap options.
+- **Preferences menu:**
+  - Consolidated settings panel bringing together **Playback Speed** (0.25x – 2.0x), **Volume Slider**, **Volume Boost** (+200% Web Audio gain), and **Auto Skip** (Opening/Ending) toggles.
+- **Video Quality selector:**
+  - Adaptive bitrate or manual resolution selection (1080p, 720p, 480p, 360p).
+- **Skip intro/outro:** OP and ED segments are marked on the timeline. Skipping can be automatic or triggered via button. Flow and Kitty use native Re:ANIME timestamps; Yuri, Zuri, Buzz, and Katana use AniSkip with duration compensation.
+- **Subtitle styling dialog:** Configure font family (Sans, Anime, Serif, Mono), font size, font color, background opacity, and text outlines.
+- **Mobile gestures:** Tap to toggle controls, double-tap left or right to seek ±10 s, and automatic landscape lock in fullscreen.
 
 ---
 
@@ -93,7 +99,7 @@ GET /embed/mal/{malId}/{episode}/{audio}?server={server}
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `server` | `string` | `flow` | One of `flow`, `kitty`, `yuri`, `zuri`, `buzz`. |
+| `server` | `string` | `katana-sub` | One of `katana`, `flow`, `kitty`, `yuri`, `zuri`, `buzz`. |
 | `startAt` / `progress` | `number` | `0` | Start playback at this offset, in seconds. |
 | `autoskipIntro` | `1` \| `0` | `1` | Skip opening themes automatically. |
 | `autoskipOutro` | `1` \| `0` | `1` | Skip ending themes automatically. |
@@ -120,8 +126,8 @@ Examples:
 # English dub, episode 1, in VLC
 vlc "https://your-domain.com/meu8/ani/16498/1/dub"
 
-# Japanese sub, episode 1, using the Yuri server, in mpv
-mpv "https://your-domain.com/meu8/ani/16498/1/sub?server=yuri"
+# Japanese sub, episode 1, using the Katana server, in mpv
+mpv "https://your-domain.com/meu8/ani/16498/1/sub?server=katana"
 
 # Inspect the response headers
 curl -IL "https://your-domain.com/meu8/mal/16498/1/dub"
@@ -137,17 +143,17 @@ curl -IL "https://your-domain.com/meu8/mal/16498/1/dub"
 
 #### `GET /api/play`
 
-Returns stream manifests, proxy URLs and subtitle tracks as JSON.
+Returns stream manifests, proxy URLs, audio tracks, and subtitle tracks as JSON.
 
 ```http
-GET /api/play?anilistId=16498&episode=1&audio=sub&server=flow
+GET /api/play?anilistId=16498&episode=1&audio=sub&server=katana
 ```
 
 Add `&format=m3u8` to get the raw playlist instead of JSON.
 
 #### `POST /api/play`
 
-Creates a playback ticket and returns the stream, subtitles and skip times.
+Creates a playback ticket and returns the stream, audio tracks, subtitles, and skip times.
 
 ```bash
 curl -X POST https://your-domain.com/api/play \
@@ -156,7 +162,7 @@ curl -X POST https://your-domain.com/api/play \
     "anilistId": 16498,
     "episode": 1,
     "audio": "sub",
-    "server": "flow",
+    "server": "katana",
     "startAt": 0
   }'
 ```
@@ -170,8 +176,12 @@ Response:
   "stream": {
     "url": "https://your-domain.com/api/proxy/m3u8?url=...",
     "format": "hls",
-    "server": "flow",
+    "server": "Katana",
     "audio": "sub",
+    "audioTracks": [
+      { "id": "ja", "name": "Japanese", "countryCode": "jp", "flag": "🇯🇵" },
+      { "id": "en", "name": "English", "countryCode": "gb", "flag": "🇬🇧" }
+    ],
     "subtitles": [
       { "language": "English", "url": "https://your-domain.com/api/proxy/subtitles?url=..." }
     ],
@@ -208,7 +218,7 @@ GET /api/anime/flow-skip-times?anilistId=16498&episode=1
 ```html
 <div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; border-radius: 16px;">
   <iframe
-    src="https://your-domain.com/embed/ani/16498/1/sub?server=flow&autoskipIntro=1"
+    src="https://your-domain.com/embed/ani/16498/1/sub?server=katana&autoskipIntro=1"
     style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;"
     allowfullscreen
     allow="autoplay; fullscreen; picture-in-picture"
@@ -225,7 +235,7 @@ interface AnimePlayerProps {
   anilistId: number;
   episode?: number;
   audio?: "sub" | "dub";
-  server?: "flow" | "kitty" | "yuri" | "zuri" | "buzz";
+  server?: "katana" | "flow" | "kitty" | "yuri" | "zuri" | "buzz";
   autoSkip?: boolean;
 }
 
@@ -233,7 +243,7 @@ export function AnimePlayer({
   anilistId,
   episode = 1,
   audio = "sub",
-  server = "flow",
+  server = "katana",
   autoSkip = true,
 }: AnimePlayerProps) {
   const embedUrl = `https://your-domain.com/embed/ani/${anilistId}/${episode}/${audio}?server=${server}&autoskipIntro=${autoSkip ? 1 : 0}`;
@@ -337,8 +347,9 @@ aniflow-api/
 │   └── page.tsx                  # Documentation page with demo player
 ├── components/
 │   └── player/
-│       ├── embed-player.tsx      # HLS player
+│       ├── embed-player.tsx      # Liquid glass HLS player
 │       ├── embed-page-client.tsx # Embed page wrapper
+│       ├── subtitle-settings-dialog.tsx # Subtitle styling panel
 │       └── player-core/          # Player state and subtitle helpers
 ├── lib/
 │   ├── aniembed-extractor.ts     # Yuri and Zuri extraction
@@ -346,6 +357,7 @@ aniflow-api/
 │   ├── buzz.ts                   # Buzz (MegaPlay) extraction and proxying
 │   ├── reanime.ts                # Flow and Kitty extraction
 │   ├── skip-times-adapter.ts     # Skip-time scaling and fallback logic
+│   ├── vidly.ts                  # Katana (Vidly) multi-audio resolver & scraper
 │   └── utils.ts                  # Shared helpers
 ├── shared/
 │   └── validators.ts             # Input validation and schemas
