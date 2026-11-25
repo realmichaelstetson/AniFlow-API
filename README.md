@@ -21,7 +21,10 @@
 </p>
 
 > [!NOTE]
-> You can try the live preview at [https://api.aniflow.cc/](https://api.aniflow.cc/), **but self-hosting your own instance is strongly recommended for better streaming performance, lower latency, and dedicated proxy bandwidth.**
+> You can try the live preview at [https://api.aniflow.cc/](https://api.aniflow.cc/), **but self-hosting your own instance is strongly recommended for better streaming performance, lower latency, full server availability, and dedicated proxy bandwidth.**
+
+> [!WARNING]
+> **Cloudflare & Hosted Proxy Limitations:** On cloud/datacenter deployments (including the hosted preview at `https://api.aniflow.cc/`), Cloudflare frequently blocks or rate-limits datacenter IPs on upstream `/api/sources` and CDN proxy endpoints. Because of this, **some servers (`Prism`, `Flux`, `Nimbus`, `Comet`, `Citadel`, and `Katana Multi`) and the extra dubbed audio languages they provide may appear and work on `localhost`/residential IPs while being unavailable on hosted production instances** unless you route upstream requests through a residential proxy (`OUTBOUND_PROXY_URL` / `PROXY_URL`), `SCRAPER_API_KEY`, or `FLARESOLVERR_URL`.
 
 ---
 
@@ -93,6 +96,11 @@ Some upstream anime hosts silently serve Japanese audio when an English dub is m
 - Movie and TV audio menus display **only real recognized country languages** actually present in the resolved video sources or HLS master manifests.
 - Unlabeled (`und`, `main`) or non-country strings (`Unknown`, `8. Unknown`, `other`) are filtered out automatically, and fake Japanese placeholders are never injected when a movie/TV source does not provide Japanese audio.
 - Clicking any language in the player switches the active HLS `audioTrack` immediately if present on the current server, or seamlessly switches to the best server offering that language.
+
+> [!WARNING]
+> **Why Some Servers & Audio Tracks Work on `localhost` but Not on Production (`api.aniflow.cc`):**
+> - Upstream Vidly `/api/sources` endpoints (`Prism`, `Flux`, `Nimbus`, `Comet`, `Citadel`, and `Katana Multi`) are protected by Cloudflare, which aggressively challenges or blocks shared cloud/datacenter IP ranges (such as Koyeb, AWS, GCP, OVH, etc.).
+> - Primary SSR-embedded routes (**Edge** for Movies/TV and **Katana Sub/Dub** for Anime) normally remain available on hosted deployments, while secondary multi-audio mirrors (**Prism**, **Citadel**, **Comet**, **Nimbus**, **Flux**, **Katana Multi**) — along with any audio dub tracks exclusive to those mirrors — may disappear or fail on cloud hosting without a residential IP or proxy bypass (`OUTBOUND_PROXY_URL` / `PROXY_URL`, `SCRAPER_API_KEY`, `FLARESOLVERR_URL`).
 
 ---
 
@@ -457,6 +465,19 @@ Build and run for production:
 ```bash
 npm run build
 npm run start
+```
+
+### Optional Proxy Environment Variables (Cloudflare Bypass on Datacenter Hosts)
+
+If you deploy AniFlow on a cloud/VPS provider whose datacenter IP is flagged by Cloudflare (causing extra Movie/TV servers like `Prism`/`Nimbus`/`Comet`/`Citadel` or `Katana Multi` audio tracks to fail), configure one of the outbound bypass options supported by `lib/proxy-agent.ts` and `lib/vidly.ts`:
+
+```env
+# HTTP/HTTPS/SOCKS outbound residential proxy
+OUTBOUND_PROXY_URL=http://user:pass@residential-proxy:port
+
+# Or ScraperAPI / FlareSolverr Cloudflare solver
+SCRAPER_API_KEY=your_scraperapi_key
+FLARESOLVERR_URL=http://localhost:8191
 ```
 
 ---
