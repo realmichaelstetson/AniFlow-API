@@ -16,6 +16,13 @@
   <img src="https://img.shields.io/badge/License-MIT-emerald?style=for-the-badge" alt="License" />
 </p>
 
+<p align="center">
+  <strong>Live Preview:</strong> <a href="https://api.aniflow.cc/">https://api.aniflow.cc/</a>
+</p>
+
+> [!NOTE]
+> You can try the live preview at [https://api.aniflow.cc/](https://api.aniflow.cc/), **but self-hosting your own instance is strongly recommended for better streaming performance, lower latency, and dedicated proxy bandwidth.**
+
 ---
 
 ## What's New
