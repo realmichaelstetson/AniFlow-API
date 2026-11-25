@@ -116,6 +116,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const customReferer = searchParams.get("referer");
+    const customOrigin = searchParams.get("origin");
     let effectiveReferer = customReferer || "https://flixcloud.cc/";
     if (!customReferer) {
       if (targetUrl.includes("megacloud")) {
@@ -147,12 +148,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const reqHeaders = {
+    const reqHeaders: Record<string, string> = {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
       Referer: effectiveReferer,
       Accept: "*/*",
     };
+    if (customOrigin) {
+      reqHeaders["Origin"] = customOrigin;
+    }
 
     const response = await axios.get(targetUrl, {
       responseType: "text",

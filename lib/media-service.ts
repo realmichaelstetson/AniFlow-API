@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getVidlyMovieSources, getVidlyTvSources, cleanAudioParam } from "@/lib/vidly";
+import { getVidlyMovieSources, getVidlyTvSources, cleanAudioParam, VidlyKatanaSource } from "@/lib/vidly";
 import { getTmdbMovie, getTmdbTv } from "@/lib/tmdb";
 import { buildDownloadPlan, streamDownload } from "@/lib/episode-download";
 
@@ -15,6 +15,86 @@ export const DOWNLOAD_CORS_HEADERS = {
   "Access-Control-Allow-Headers": "*",
   "Access-Control-Expose-Headers": "Content-Disposition, X-Episode-Duration, X-Episode-Resolution",
 };
+
+function orderMediaCandidates(
+  sources: VidlyKatanaSource[],
+  serverParam: string,
+  audioCode: string
+): VidlyKatanaSource[] {
+  const matchesServer = (s: VidlyKatanaSource) =>
+    Boolean(
+      serverParam &&
+        (s.id.toLowerCase() === serverParam ||
+          s.server.toLowerCase().includes(serverParam) ||
+          s.serverName.toLowerCase().includes(serverParam))
+    );
+  const matchesAudio = (s: VidlyKatanaSource) =>
+    s.audioTracks.some((t) => t.id === audioCode);
+
+  const buckets: VidlyKatanaSource[][] = serverParam
+    ? [
+        sources.filter((s) => matchesServer(s) && matchesAudio(s) && !s.isHevc),
+        sources.filter((s) => matchesServer(s) && matchesAudio(s) && s.isHevc),
+        sources.filter((s) => matchesServer(s) && !s.isHevc),
+        sources.filter((s) => matchesServer(s) && s.isHevc),
+        sources.filter((s) => matchesAudio(s) && !s.isHevc),
+        sources.filter((s) => matchesAudio(s) && s.isHevc),
+        sources.filter((s) => !s.isHevc),
+        sources.filter((s) => s.isHevc),
+      ]
+    : [
+        sources.filter((s) => matchesAudio(s) && !s.isHevc),
+        sources.filter((s) => matchesAudio(s) && s.isHevc),
+        sources.filter((s) => !s.isHevc),
+        sources.filter((s) => s.isHevc),
+      ];
+
+  const ordered: VidlyKatanaSource[] = [];
+  const seen = new Set<string>();
+  for (const bucket of buckets) {
+    for (const s of bucket) {
+      if (!seen.has(s.id)) {
+        seen.add(s.id);
+        ordered.push(s);
+      }
+    }
+  }
+  return ordered;
+}
+
+async function verifyM3u8DirectUrl(directUrl?: string): Promise<boolean> {
+  if (!directUrl) return false;
+  try {
+    const res = await fetch(directUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        Referer: "https://vidly.pro/",
+        Accept: "*/*",
+      },
+      signal: AbortSignal.timeout(4500),
+    });
+    if (!res.ok) return false;
+    const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
+    return text.startsWith("#EXTM3U");
+  } catch {
+    return false;
+  }
+}
+
+async function pickWorkingM3u8Source(
+  sources: VidlyKatanaSource[],
+  serverParam: string,
+  audioCode: string
+): Promise<VidlyKatanaSource | null> {
+  const candidates = orderMediaCandidates(sources, serverParam, audioCode);
+  for (const cand of candidates) {
+    if (await verifyM3u8DirectUrl(cand.directUrl)) {
+      return cand;
+    }
+  }
+  return null;
+}
 
 function buildFilename(title: string, audio: string, ext: string, season?: number, episode?: number) {
   const base = (title || "Media").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
@@ -74,7 +154,7 @@ export async function handleMoviePlay(
       getTmdbMovie(tmdbId).catch(() => null),
     ]);
 
-    const { sources, meta: vidlyMeta } = sourcesRes;
+    let { sources, meta: vidlyMeta } = sourcesRes;
 
     if (!sources || sources.length === 0) {
       return NextResponse.json(
@@ -83,30 +163,24 @@ export async function handleMoviePlay(
       );
     }
 
-    let chosenSource = sources[0];
-    const matchesServer = (s: (typeof sources)[0]) =>
-      s.id.toLowerCase() === serverParam ||
-      s.server.toLowerCase().includes(serverParam) ||
-      s.serverName.toLowerCase().includes(serverParam);
-    const matchesAudio = (s: (typeof sources)[0]) =>
-      s.audioTracks.some((t) => t.id === audioClean.code);
-
-    if (serverParam) {
-      const exactBoth = sources.find((s) => matchesServer(s) && matchesAudio(s));
-      const foundServer = sources.find(matchesServer);
-      if (exactBoth) chosenSource = exactBoth;
-      else if (foundServer) chosenSource = foundServer;
-    } else if (audioClean) {
-      const matchAudio = sources.find(matchesAudio);
-      if (matchAudio) chosenSource = matchAudio;
-    }
+    let ordered = orderMediaCandidates(sources, serverParam, audioClean.code);
+    let chosenSource = ordered[0] || sources[0];
 
     const host = request.headers.get("host") || "localhost:3000";
     const protocol = request.headers.get("x-forwarded-proto") || "http";
     const baseUrl = `${protocol}://${host}`;
 
     if (wantsM3u8) {
-      const targetM3u8 = chosenSource.videoUrl || chosenSource.m3u8;
+      let verified = await pickWorkingM3u8Source(sources, serverParam, audioClean.code);
+      if (!verified) {
+        const refreshed = await getVidlyMovieSources(tmdbId, audioClean.name, { forceRefresh: true });
+        if (refreshed.sources.length > 0) {
+          sources = refreshed.sources;
+          verified = await pickWorkingM3u8Source(sources, serverParam, audioClean.code);
+        }
+      }
+      const finalSrc = verified || chosenSource;
+      const targetM3u8 = finalSrc.videoUrl || finalSrc.m3u8;
       const absoluteUrl = targetM3u8.startsWith("http") ? targetM3u8 : new URL(targetM3u8, baseUrl).href;
       return NextResponse.redirect(absoluteUrl, { status: 302, headers: CORS_HEADERS });
     }
@@ -144,6 +218,7 @@ export async function handleMoviePlay(
           serverName: s.serverName,
           type: s.type,
           isHls: s.isHls,
+          isHevc: Boolean(s.isHevc),
           quality: s.quality,
           audio: s.audio,
           language: s.language,
@@ -220,7 +295,7 @@ export async function handleTvPlay(
       getTmdbTv(tmdbId).catch(() => null),
     ]);
 
-    const { sources, meta: vidlyMeta } = sourcesRes;
+    let { sources, meta: vidlyMeta } = sourcesRes;
 
     if (!sources || sources.length === 0) {
       return NextResponse.json(
@@ -229,30 +304,24 @@ export async function handleTvPlay(
       );
     }
 
-    let chosenSource = sources[0];
-    const matchesServer = (s: (typeof sources)[0]) =>
-      s.id.toLowerCase() === serverParam ||
-      s.server.toLowerCase().includes(serverParam) ||
-      s.serverName.toLowerCase().includes(serverParam);
-    const matchesAudio = (s: (typeof sources)[0]) =>
-      s.audioTracks.some((t) => t.id === audioClean.code);
-
-    if (serverParam) {
-      const exactBoth = sources.find((s) => matchesServer(s) && matchesAudio(s));
-      const foundServer = sources.find(matchesServer);
-      if (exactBoth) chosenSource = exactBoth;
-      else if (foundServer) chosenSource = foundServer;
-    } else if (audioClean) {
-      const matchAudio = sources.find(matchesAudio);
-      if (matchAudio) chosenSource = matchAudio;
-    }
+    let ordered = orderMediaCandidates(sources, serverParam, audioClean.code);
+    let chosenSource = ordered[0] || sources[0];
 
     const host = request.headers.get("host") || "localhost:3000";
     const protocol = request.headers.get("x-forwarded-proto") || "http";
     const baseUrl = `${protocol}://${host}`;
 
     if (wantsM3u8) {
-      const targetM3u8 = chosenSource.videoUrl || chosenSource.m3u8;
+      let verified = await pickWorkingM3u8Source(sources, serverParam, audioClean.code);
+      if (!verified) {
+        const refreshed = await getVidlyTvSources(tmdbId, season, episode, audioClean.name, { forceRefresh: true });
+        if (refreshed.sources.length > 0) {
+          sources = refreshed.sources;
+          verified = await pickWorkingM3u8Source(sources, serverParam, audioClean.code);
+        }
+      }
+      const finalSrc = verified || chosenSource;
+      const targetM3u8 = finalSrc.videoUrl || finalSrc.m3u8;
       const absoluteUrl = targetM3u8.startsWith("http") ? targetM3u8 : new URL(targetM3u8, baseUrl).href;
       return NextResponse.redirect(absoluteUrl, { status: 302, headers: CORS_HEADERS });
     }
@@ -294,6 +363,7 @@ export async function handleTvPlay(
           serverName: s.serverName,
           type: s.type,
           isHls: s.isHls,
+          isHevc: Boolean(s.isHevc),
           quality: s.quality,
           audio: s.audio,
           language: s.language,

@@ -160,42 +160,71 @@ export async function GET(request: NextRequest) {
     }
 
     let response: any;
-    try {
-      response = await m3u8Axios.get(targetUrl, {
-        responseType: "text",
-        timeout: 15000,
-        headers,
-      });
-    } catch (fetchErr: any) {
-      const status = fetchErr.response?.status;
-      if (status === 401 || status === 403 || status === 410 || !response) {
-        const fresh = await tryRefreshStream();
-        if (fresh) {
-          targetUrl = fresh.hls;
-          if (fresh.pk) pk = fresh.pk;
-          try {
-            response = await m3u8Axios.get(targetUrl, {
-              responseType: "text",
-              timeout: 15000,
-              headers,
-            });
-          } catch {}
+    let lastFetchErr: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await m3u8Axios.get(targetUrl, {
+          responseType: "arraybuffer",
+          timeout: 15000,
+          headers,
+        });
+        break;
+      } catch (fetchErr: any) {
+        lastFetchErr = fetchErr;
+        const status = fetchErr.response?.status;
+        if (status === 401 || status === 403 || status === 410) {
+          const fresh = await tryRefreshStream();
+          if (fresh) {
+            targetUrl = fresh.hls;
+            if (fresh.pk) pk = fresh.pk;
+            try {
+              response = await m3u8Axios.get(targetUrl, {
+                responseType: "arraybuffer",
+                timeout: 15000,
+                headers,
+              });
+              break;
+            } catch (e2: any) {
+              lastFetchErr = e2;
+            }
+          }
+          if (status === 403 && headers["Origin"] && attempt === 0) {
+            delete headers["Origin"];
+            continue;
+          }
+          break;
         }
-      }
-      if (!response) {
-        const isAuthError = status === 403 || status === 401 || status === 410;
-        const statusCode = isAuthError ? 410 : (status || 502);
-        return NextResponse.json(
-          { error: isAuthError ? "Stream token expired" : `Proxy upstream error: ${fetchErr.message || fetchErr}`, code: statusCode, expired: isAuthError },
-          { status: statusCode, headers: CORS_HEADERS }
-        );
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
       }
     }
 
-    let content = response.data;
+    if (!response) {
+      const status = lastFetchErr?.response?.status;
+      const isAuthError = status === 403 || status === 401 || status === 410;
+      const statusCode = isAuthError ? 410 : (status || 502);
+      return NextResponse.json(
+        {
+          error: isAuthError
+            ? "Stream token expired"
+            : `Proxy upstream error: ${lastFetchErr?.message || lastFetchErr}`,
+          code: statusCode,
+          expired: isAuthError,
+        },
+        { status: statusCode, headers: CORS_HEADERS }
+      );
+    }
+
+    const rawBuf = Buffer.from(response.data);
+    const upstreamCt = String(response.headers["content-type"] || "").toLowerCase();
+    let content: string | null = null;
+    if (!upstreamCt.startsWith("video/") || targetUrl.toLowerCase().includes(".m3u8")) {
+      content = rawBuf.toString("utf8").replace(/^\uFEFF/, "");
+    }
 
     // Decrypt if XOR-encrypted with pk
-    if (pk && typeof content === "string" && !content.startsWith("#EXTM3U")) {
+    if (pk && content !== null && !content.trimStart().startsWith("#EXTM3U")) {
       try {
         const l = Buffer.from(pk, "base64").toString("binary");
         const u = Buffer.from(content.trim(), "base64").toString("binary");
@@ -203,17 +232,17 @@ export async function GET(request: NextRequest) {
         for (let h = 0; h < u.length; h++) {
           d.push(u.charCodeAt(h) ^ l.charCodeAt(h % l.length));
         }
-        const dec = new TextDecoder().decode(new Uint8Array(d));
-        if (dec.startsWith("#EXTM3U")) {
+        const dec = new TextDecoder().decode(new Uint8Array(d)).replace(/^\uFEFF/, "");
+        if (dec.trimStart().startsWith("#EXTM3U")) {
           content = dec;
         }
       } catch {}
     }
 
     // Rewrite HLS manifest URIs to pass through proxy
-    if (typeof content === "string" && content.startsWith("#EXTM3U")) {
+    if (content !== null && content.trimStart().startsWith("#EXTM3U")) {
       const baseUrl = targetUrl;
-      const lines = content.split("\n");
+      const lines = content.split(/\r?\n/);
       const rewrittenLines: string[] = [];
       const audioMediaLines: Array<{ line: string; isMatch: boolean; wasDefault: boolean; groupId: string }> = [];
 
@@ -280,6 +309,24 @@ export async function GET(request: NextRequest) {
         }
       };
 
+      const isFlixcloudStream = Boolean(
+        aid ||
+        pk ||
+        (targetUrl &&
+          (targetUrl.includes("flixcloud") ||
+            targetUrl.includes("atomic4cdn") ||
+            targetUrl.includes("rundowncdn")))
+      );
+      const aidParam = aid ? `&aid=${encodeURIComponent(aid)}` : "";
+      const vParam = v ? `&v=${v}` : "";
+      const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
+      const epParam = ep ? `&ep=${ep}` : "";
+      const srvParam = server ? `&server=${encodeURIComponent(server)}` : "";
+      const audioParam = audio ? `&audio=${encodeURIComponent(audio)}` : "";
+      const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
+      const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
+      const uaParam = ua ? `&ua=${encodeURIComponent(ua)}` : "";
+
       let isExpectingSegment = false;
       let isExpectingChildPlaylist = false;
       let segmentsEncrypted = false;
@@ -295,14 +342,11 @@ export async function GET(request: NextRequest) {
         // Collect and modify #EXT-X-MEDIA:TYPE=AUDIO
         if (trimmed.startsWith("#EXT-X-MEDIA:") && trimmed.includes("TYPE=AUDIO")) {
           let audioLine = line;
-          const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
-          const epParam = ep ? `&ep=${ep}` : "";
-          const srvParam = server ? `&server=${encodeURIComponent(server)}` : "";
 
           if (audioLine.includes('URI="')) {
             audioLine = audioLine.replace(/URI="([^"]+)"/, (m, uri) => {
               const abs = resolveUrlWithBase(uri);
-              return `URI="/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${audio}${aid ? `&aid=${encodeURIComponent(aid)}` : ""}${v ? `&v=${v}` : ""}${qParam}${epParam}${srvParam}"`;
+              return `URI="/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${encodeURIComponent(audio)}${aidParam}${vParam}${qParam}${epParam}${srvParam}${refParam}${origParam}${uaParam}"`;
             });
           }
 
@@ -333,31 +377,15 @@ export async function GET(request: NextRequest) {
           flushAudioMediaLines();
         }
 
-        // Rewrite #EXT-X-MEDIA other than AUDIO
+        // Rewrite #EXT-X-MEDIA other than AUDIO (e.g. SUBTITLES)
         if (trimmed.startsWith("#EXT-X-MEDIA:") && trimmed.includes('URI="')) {
           const rewrittenMedia = line.replace(/URI="([^"]+)"/, (m, uri) => {
             const abs = resolveUrlWithBase(uri);
-            return `URI="/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}"`;
+            return `URI="/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}${refParam}${origParam}${uaParam}"`;
           });
           rewrittenLines.push(rewrittenMedia);
           continue;
         }
-
-        const isFlixcloudStream = Boolean(
-          aid ||
-          pk ||
-          (targetUrl &&
-            (targetUrl.includes("flixcloud") ||
-              targetUrl.includes("atomic4cdn") ||
-              targetUrl.includes("rundowncdn")))
-        );
-
-        const aidParam = aid ? `&aid=${encodeURIComponent(aid)}` : "";
-        const vParam = v ? `&v=${v}` : "";
-        const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
-        const epParam = ep ? `&ep=${ep}` : "";
-        const srvParam = server ? `&server=${encodeURIComponent(server)}` : "";
-        const audioParam = audio ? `&audio=${encodeURIComponent(audio)}` : "";
 
         // Handle #EXT-X-MAP with URI
         if (trimmed.startsWith("#EXT-X-MAP:") && trimmed.includes('URI="')) {
@@ -366,9 +394,6 @@ export async function GET(request: NextRequest) {
             if (isFlixcloudStream) {
               return `URI="/api/proxy/ts?url=${encodeURIComponent(abs)}${aidParam}${vParam}${qParam}${epParam}${srvParam}"`;
             }
-            const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
-            const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
-            const uaParam = ua ? `&ua=${encodeURIComponent(ua)}` : "";
             return `URI="/api/proxy/segment?url=${encodeURIComponent(abs)}${refParam}${origParam}${uaParam}"`;
           });
           rewrittenLines.push(rewrittenMap);
@@ -384,14 +409,9 @@ export async function GET(request: NextRequest) {
           const rewrittenKey = line.replace(/URI=["']?([^"',\s]+)["']?/, (m, uri) => {
             const abs = resolveUrlWithBase(uri);
             if (isFlixcloudStream) {
-              const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
-              const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
               return `URI="/api/proxy/key?url=${encodeURIComponent(abs)}${aidParam}${vParam}${qParam}${epParam}${srvParam}${audioParam}${refParam}${origParam}"`;
             }
-            const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
-            const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
-            const uaParam = ua ? `&ua=${encodeURIComponent(ua)}` : "";
-            return `URI="/api/proxy/segment?url=${encodeURIComponent(abs)}${refParam}${origParam}${uaParam}"`;
+            return `URI="/api/proxy/segment?url=${encodeURIComponent(abs)}${refParam}${origParam}${uaParam}&key=1"`;
           });
           rewrittenLines.push(rewrittenKey);
           continue;
@@ -404,30 +424,48 @@ export async function GET(request: NextRequest) {
         } else if (trimmed.startsWith("#EXT-X-STREAM-INF:")) {
           isExpectingChildPlaylist = true;
           isExpectingSegment = false;
+          // Strip non-standard DEFAULT attribute from #EXT-X-STREAM-INF (RFC 8216 compliance)
+          const cleanStreamInf = line
+            .replace(/,\s*DEFAULT=(YES|NO)/gi, "")
+            .replace(/DEFAULT=(YES|NO)\s*,?/gi, "");
+          rewrittenLines.push(cleanStreamInf);
+          continue;
         }
 
         // Process URI lines (non-comment lines)
         if (!trimmed.startsWith("#")) {
           const abs = resolveUrlWithBase(trimmed);
-          const refParam = effectiveReferer ? `&referer=${encodeURIComponent(effectiveReferer)}` : "";
-          const origParam = effectiveOrigin ? `&origin=${encodeURIComponent(effectiveOrigin)}` : "";
-          const uaParam = ua ? `&ua=${encodeURIComponent(ua)}` : "";
+
+          let absPathname = "";
+          try {
+            absPathname = new URL(abs).pathname.toLowerCase();
+          } catch {}
+
+          // Subtitle segment files (.vtt, .srt, .ass, etc.) must be served via subtitle proxy
+          if (/\.(vtt|webvtt|srt|ass|ssa)$/i.test(absPathname)) {
+            isExpectingSegment = false;
+            rewrittenLines.push(
+              `/api/proxy/subtitles?url=${encodeURIComponent(abs)}${refParam}${origParam}`
+            );
+            continue;
+          }
 
           // Explicitly following #EXT-X-STREAM-INF or explicitly an .m3u8 playlist URL
           const isPlaylistUrl =
             isExpectingChildPlaylist ||
             trimmed.endsWith(".m3u8") ||
-            trimmed.includes(".m3u8?");
+            trimmed.includes(".m3u8?") ||
+            absPathname.endsWith(".m3u8");
 
           if (isPlaylistUrl && !isExpectingSegment) {
             isExpectingChildPlaylist = false;
             rewrittenLines.push(
-              `/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${audio}${aidParam}${vParam}${qParam}${epParam}${srvParam}${refParam}${origParam}${uaParam}`
+              `/api/proxy/m3u8?url=${encodeURIComponent(abs)}&pk=${encodeURIComponent(pk || "")}&audio=${encodeURIComponent(audio)}${aidParam}${vParam}${qParam}${epParam}${srvParam}${refParam}${origParam}${uaParam}`
             );
             continue;
           }
 
-          // Otherwise it is a media segment (e.g. .ts, .m4s, .txt from GoldenAnchor/Megaplay)
+          // Otherwise it is a media segment (e.g. .ts, .m4s, .jpg, .js, .txt)
           isExpectingSegment = false;
           const rawParam = segmentsEncrypted ? "&raw=1" : "";
           if (isFlixcloudStream) {
@@ -447,17 +485,17 @@ export async function GET(request: NextRequest) {
         status: 200,
         headers: {
           ...CORS_HEADERS,
-          "Content-Type": "application/vnd.apple.mpegurl",
+          "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
           "Cache-Control": "no-cache, no-store, must-revalidate",
         },
       });
     }
 
-    return new NextResponse(content, {
+    return new NextResponse(new Uint8Array(rawBuf), {
       status: 200,
       headers: {
         ...CORS_HEADERS,
-        "Content-Type": String(response.headers["content-type"] || "text/plain"),
+        "Content-Type": String(response.headers["content-type"] || "application/octet-stream"),
         "Cache-Control": "no-cache, no-store, must-revalidate",
       },
     });

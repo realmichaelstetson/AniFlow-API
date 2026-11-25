@@ -46,13 +46,13 @@ function setCachedSegment(url: string, buf: Uint8Array) {
   segmentCache.set(url, { buf, time: Date.now() });
 }
 
-function segmentResponse(buf: Uint8Array) {
-  const isFmp4 = isFmp4Buffer(buf);
+function segmentResponse(buf: Uint8Array, isKey = false) {
+  const isFmp4 = !isKey && isFmp4Buffer(buf);
   return new NextResponse(buf as unknown as BodyInit, {
     status: 200,
     headers: {
       ...CORS_HEADERS,
-      "Content-Type": isFmp4 ? "video/mp4" : "video/mp2t",
+      "Content-Type": isKey ? "application/octet-stream" : isFmp4 ? "video/mp4" : "video/mp2t",
       "Content-Length": buf.length.toString(),
       "Cache-Control": "public, max-age=86400, immutable",
     },
@@ -62,7 +62,8 @@ function segmentResponse(buf: Uint8Array) {
 async function fetchSegment(
   targetUrl: string,
   headers: Record<string, string>,
-  isEncrypted: boolean
+  isEncrypted: boolean,
+  isKey = false
 ): Promise<SegmentResult> {
   let lastError = "Segment proxy error";
   let lastStatus = 502;
@@ -72,6 +73,13 @@ async function fetchSegment(
     try {
       const res = await segmentAxios.get(targetUrl, { headers });
       let buf = new Uint8Array(res.data);
+
+      if (isKey) {
+        if (buf.length === 0 || ((buf.length > 32 || buf[0] === 0x3c || buf[0] === 0x7b) && looksLikeTextErrorPayload(buf))) {
+          return { error: "Invalid decryption key received from upstream", status: 502 };
+        }
+        return { buf };
+      }
 
       // Some hosts wrap MPEG-TS in a fake image header (e.g. a 252-byte PNG header from
       // TikTokCDN/Megaplay). Strip it; ciphertext and fMP4 are passed through untouched.
@@ -109,6 +117,12 @@ export async function GET(request: NextRequest) {
   const customUa = searchParams.get("ua") || "";
   // Set by /api/proxy/m3u8 for segments covered by #EXT-X-KEY (AES ciphertext)
   const isEncrypted = searchParams.get("raw") === "1";
+  let isKey = searchParams.get("key") === "1";
+  if (!isKey && targetUrl) {
+    try {
+      isKey = new URL(targetUrl).pathname.toLowerCase().endsWith(".key");
+    } catch {}
+  }
 
   if (!targetUrl) {
     return NextResponse.json({ error: "Missing url parameter" }, { status: 400, headers: CORS_HEADERS });
@@ -134,9 +148,10 @@ export async function GET(request: NextRequest) {
     return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  const cached = getCachedSegment(targetUrl);
+  const cacheKey = isKey ? `key:${targetUrl}` : targetUrl;
+  const cached = getCachedSegment(cacheKey);
   if (cached) {
-    return segmentResponse(cached);
+    return segmentResponse(cached, isKey);
   }
 
   let effectiveReferer = referer;
@@ -181,19 +196,19 @@ export async function GET(request: NextRequest) {
     headers["Origin"] = customOrigin;
   }
 
-  let pending = inFlightSegments.get(targetUrl);
+  let pending = inFlightSegments.get(cacheKey);
   if (!pending) {
-    pending = fetchSegment(targetUrl, headers, isEncrypted).then((result) => {
-      if ("buf" in result) setCachedSegment(targetUrl, result.buf);
+    pending = fetchSegment(targetUrl, headers, isEncrypted, isKey).then((result) => {
+      if ("buf" in result) setCachedSegment(cacheKey, result.buf);
       return result;
     });
-    inFlightSegments.set(targetUrl, pending);
-    pending.finally(() => inFlightSegments.delete(targetUrl));
+    inFlightSegments.set(cacheKey, pending);
+    pending.finally(() => inFlightSegments.delete(cacheKey));
   }
 
   const result = await pending;
   if ("buf" in result) {
-    return segmentResponse(result.buf);
+    return segmentResponse(result.buf, isKey);
   }
   return NextResponse.json({ error: result.error }, { status: result.status, headers: CORS_HEADERS });
 }

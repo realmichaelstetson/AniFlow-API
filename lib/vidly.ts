@@ -49,6 +49,7 @@ export interface VidlyKatanaSource {
   directUrl: string;
   quality: string;
   isHls: boolean;
+  isHevc?: boolean;
   audioTracks: VidlyAudioTrack[];
   subtitles: VidlySubtitle[];
   hasDub?: boolean;
@@ -921,17 +922,20 @@ function finalizeVidlyMediaSources(
     };
   });
 
-  if (normPref) {
-    cloned.sort((a, b) => {
+  cloned.sort((a, b) => {
+    if (normPref) {
       const aHas = a.audioTracks.some((t) => t.id === normPref.code);
       const bHas = b.audioTracks.some((t) => t.id === normPref.code);
       if (aHas && !bHas) return -1;
       if (!aHas && bHas) return 1;
-      if (a.id === primaryServerId && b.id !== primaryServerId) return -1;
-      if (b.id === primaryServerId && a.id !== primaryServerId) return 1;
-      return 0;
-    });
-  }
+    }
+    const aHevc = a.isHevc ? 1 : 0;
+    const bHevc = b.isHevc ? 1 : 0;
+    if (aHevc !== bHevc) return aHevc - bHevc;
+    if (a.id === primaryServerId && b.id !== primaryServerId) return -1;
+    if (b.id === primaryServerId && a.id !== primaryServerId) return 1;
+    return 0;
+  });
 
   return cloned;
 }
@@ -949,26 +953,45 @@ async function buildVidlyMediaStreamSource(
 
   const parsedLang = st.language ? normalizeLanguage(st.language, st.label) : null;
   const langObj = parsedLang && parsedLang.known ? parsedLang : null;
+  const isHevcUrl = /[_-]h265[_-]|[_-]hevc[_-]/i.test(directUrl);
+  let hasH265Codec = false;
 
   let m3u8AudioTracks: VidlyAudioTrack[] = [];
   let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
-  if (totalStreams === 1) {
-    try {
-      const m3u8Res = await vidlyAxios.get(directUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-          Referer: "https://vidly.pro/",
-        },
-        timeout: 3500,
-        responseType: "text",
-      });
-      if (typeof m3u8Res.data === "string" && m3u8Res.data.startsWith("#EXTM3U")) {
-        m3u8AudioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
-        m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+  try {
+    const m3u8Res = await vidlyAxios.get(directUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        Referer: "https://vidly.pro/",
+      },
+      timeout: totalStreams === 1 ? 5000 : 3500,
+      responseType: "text",
+      validateStatus: () => true,
+    });
+    if (m3u8Res.status >= 400) {
+      return null;
+    }
+    if (typeof m3u8Res.data === "string") {
+      const cleanData = m3u8Res.data.replace(/^\uFEFF/, "");
+      if (cleanData.trimStart().startsWith("#EXTM3U")) {
+        m3u8AudioTracks = parseAudioTracksFromM3u8(cleanData);
+        m3u8Subs = parseSubtitlesFromM3u8(cleanData, directUrl);
+        hasH265Codec = /CODECS="[^"]*(hvc1|hev1)/i.test(cleanData);
+      } else {
+        const lowerHead = cleanData.trimStart().slice(0, 120).toLowerCase();
+        if (
+          lowerHead.startsWith("<") ||
+          lowerHead.startsWith("{") ||
+          lowerHead.includes("upstream manifest") ||
+          lowerHead.includes("not found") ||
+          lowerHead.includes("error")
+        ) {
+          return null;
+        }
       }
-    } catch {}
-  }
+    }
+  } catch {}
 
   const audioTracks: VidlyAudioTrack[] =
     m3u8AudioTracks.length > 0
@@ -1012,6 +1035,7 @@ async function buildVidlyMediaStreamSource(
     directUrl,
     quality: st.quality || "1080p",
     isHls: true,
+    isHevc: isHevcUrl || hasH265Codec,
     audioTracks,
     subtitles: dedupedSubs,
     hasDub: audioTracks.some((a) => a.id !== "ja"),
@@ -1021,11 +1045,12 @@ async function buildVidlyMediaStreamSource(
 
 export async function getVidlyMovieSources(
   tmdbId: number,
-  preferredAudio?: string
+  preferredAudio?: string,
+  options?: { forceRefresh?: boolean }
 ): Promise<{ sources: VidlyKatanaSource[]; meta: VidlyMediaMeta | null }> {
   const normPref = preferredAudio ? cleanAudioParam(preferredAudio) : null;
   const cacheKey = `movie_${tmdbId}`;
-  const cached = vidlyMediaCache.get(cacheKey);
+  const cached = !options?.forceRefresh ? vidlyMediaCache.get(cacheKey) : undefined;
   if (cached && Date.now() - cached.timestamp < CACHE_TTL && cached.sources.length > 0) {
     return {
       sources: finalizeVidlyMediaSources(cached.sources, normPref, "singularity"),
@@ -1089,6 +1114,8 @@ export async function getVidlyMovieSources(
 
       let audioTracks: VidlyAudioTrack[] = [];
       let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+      let initialDead = false;
+      let hasH265Codec = /[_-]h265[_-]|[_-]hevc[_-]/i.test(directUrl);
       try {
         const m3u8Res = await vidlyAxios.get(directUrl, {
           headers: {
@@ -1096,43 +1123,58 @@ export async function getVidlyMovieSources(
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             Referer: "https://vidly.pro/",
           },
-          timeout: 8000,
+          timeout: 6000,
           responseType: "text",
+          validateStatus: () => true,
         });
-        if (typeof m3u8Res.data === "string") {
-          audioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
-          m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+        if (m3u8Res.status >= 400) {
+          initialDead = true;
+        } else if (typeof m3u8Res.data === "string") {
+          const cleanData = m3u8Res.data.replace(/^\uFEFF/, "");
+          if (cleanData.trimStart().startsWith("#EXTM3U")) {
+            audioTracks = parseAudioTracksFromM3u8(cleanData);
+            m3u8Subs = parseSubtitlesFromM3u8(cleanData, directUrl);
+            if (/CODECS="[^"]*(hvc1|hev1)/i.test(cleanData)) hasH265Codec = true;
+          } else {
+            const lowerHead = cleanData.trimStart().slice(0, 120).toLowerCase();
+            if (lowerHead.startsWith("<") || lowerHead.startsWith("{") || lowerHead.includes("error")) {
+              initialDead = true;
+            }
+          }
         }
       } catch {}
 
-      if (audioTracks.length === 0) {
-        audioTracks = [
-          { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
-        ];
+      if (!initialDead) {
+        if (audioTracks.length === 0) {
+          audioTracks = [
+            { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
+          ];
+        }
+
+        const dedupedSubs = deduplicateSubtitles([
+          ...(stream.subtitles || []),
+          ...(initialData.subtitles || []),
+          ...m3u8Subs,
+        ]);
+
+        sources.push({
+          id: srvId,
+          server: srvName,
+          name: srvName,
+          serverName: srvName,
+          type: "SUB",
+          audio: "sub",
+          videoUrl: proxyM3u8,
+          m3u8: proxyM3u8,
+          directUrl,
+          quality: stream.quality || "1080p",
+          isHls: true,
+          isHevc: hasH265Codec,
+          audioTracks,
+          subtitles: dedupedSubs,
+          hasDub: audioTracks.some((a) => a.id !== "ja"),
+        });
       }
-
-      const dedupedSubs = deduplicateSubtitles([
-        ...(stream.subtitles || []),
-        ...(initialData.subtitles || []),
-        ...m3u8Subs,
-      ]);
-
-      sources.push({
-        id: srvId,
-        server: srvName,
-        name: srvName,
-        serverName: srvName,
-        type: "SUB",
-        audio: "sub",
-        videoUrl: proxyM3u8,
-        m3u8: proxyM3u8,
-        directUrl,
-        quality: stream.quality || "1080p",
-        isHls: true,
-        audioTracks,
-        subtitles: dedupedSubs,
-        hasDub: audioTracks.some((a) => a.id !== "ja"),
-      });
     }
 
     // 2. Query remaining providers in parallel
@@ -1198,11 +1240,12 @@ export async function getVidlyTvSources(
   tmdbId: number,
   season: number,
   episode: number,
-  preferredAudio?: string
+  preferredAudio?: string,
+  options?: { forceRefresh?: boolean }
 ): Promise<{ sources: VidlyKatanaSource[]; meta: VidlyMediaMeta | null }> {
   const normPref = preferredAudio ? cleanAudioParam(preferredAudio) : null;
   const cacheKey = `tv_${tmdbId}_s${season}_e${episode}`;
-  const cached = vidlyMediaCache.get(cacheKey);
+  const cached = !options?.forceRefresh ? vidlyMediaCache.get(cacheKey) : undefined;
   if (cached && Date.now() - cached.timestamp < CACHE_TTL && cached.sources.length > 0) {
     return {
       sources: finalizeVidlyMediaSources(cached.sources, normPref, "evion"),
@@ -1266,6 +1309,8 @@ export async function getVidlyTvSources(
 
       let audioTracks: VidlyAudioTrack[] = [];
       let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+      let initialDead = false;
+      let hasH265Codec = /[_-]h265[_-]|[_-]hevc[_-]/i.test(directUrl);
       try {
         const m3u8Res = await vidlyAxios.get(directUrl, {
           headers: {
@@ -1273,43 +1318,58 @@ export async function getVidlyTvSources(
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             Referer: "https://vidly.pro/",
           },
-          timeout: 8000,
+          timeout: 6000,
           responseType: "text",
+          validateStatus: () => true,
         });
-        if (typeof m3u8Res.data === "string") {
-          audioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
-          m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+        if (m3u8Res.status >= 400) {
+          initialDead = true;
+        } else if (typeof m3u8Res.data === "string") {
+          const cleanData = m3u8Res.data.replace(/^\uFEFF/, "");
+          if (cleanData.trimStart().startsWith("#EXTM3U")) {
+            audioTracks = parseAudioTracksFromM3u8(cleanData);
+            m3u8Subs = parseSubtitlesFromM3u8(cleanData, directUrl);
+            if (/CODECS="[^"]*(hvc1|hev1)/i.test(cleanData)) hasH265Codec = true;
+          } else {
+            const lowerHead = cleanData.trimStart().slice(0, 120).toLowerCase();
+            if (lowerHead.startsWith("<") || lowerHead.startsWith("{") || lowerHead.includes("error")) {
+              initialDead = true;
+            }
+          }
         }
       } catch {}
 
-      if (audioTracks.length === 0) {
-        audioTracks = [
-          { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
-        ];
+      if (!initialDead) {
+        if (audioTracks.length === 0) {
+          audioTracks = [
+            { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
+          ];
+        }
+
+        const dedupedSubs = deduplicateSubtitles([
+          ...(stream.subtitles || []),
+          ...(initialData.subtitles || []),
+          ...m3u8Subs,
+        ]);
+
+        sources.push({
+          id: srvId,
+          server: srvName,
+          name: srvName,
+          serverName: srvName,
+          type: "SUB",
+          audio: "sub",
+          videoUrl: proxyM3u8,
+          m3u8: proxyM3u8,
+          directUrl,
+          quality: stream.quality || "1080p",
+          isHls: true,
+          isHevc: hasH265Codec,
+          audioTracks,
+          subtitles: dedupedSubs,
+          hasDub: audioTracks.some((a) => a.id !== "ja"),
+        });
       }
-
-      const dedupedSubs = deduplicateSubtitles([
-        ...(stream.subtitles || []),
-        ...(initialData.subtitles || []),
-        ...m3u8Subs,
-      ]);
-
-      sources.push({
-        id: srvId,
-        server: srvName,
-        name: srvName,
-        serverName: srvName,
-        type: "SUB",
-        audio: "sub",
-        videoUrl: proxyM3u8,
-        m3u8: proxyM3u8,
-        directUrl,
-        quality: stream.quality || "1080p",
-        isHls: true,
-        audioTracks,
-        subtitles: dedupedSubs,
-        hasDub: audioTracks.some((a) => a.id !== "ja"),
-      });
     }
 
     // 2. Query remaining providers in parallel

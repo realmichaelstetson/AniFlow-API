@@ -2016,6 +2016,9 @@ export function EmbedPlayer({
         const aStub = a.videoUrl.includes("format=m3u8") ? 1 : 0;
         const bStub = b.videoUrl.includes("format=m3u8") ? 1 : 0;
         if (aStub !== bStub) return aStub - bStub;
+        const aHevc = (a as any).isHevc ? 1 : 0;
+        const bHevc = (b as any).isHevc ? 1 : 0;
+        if (aHevc !== bHevc) return aHevc - bHevc;
         const provA = resolveSourceProviderName(a).toLowerCase().split(" ")[0];
         const provB = resolveSourceProviderName(b).toLowerCase().split(" ")[0];
         const aSame = provA === currentProv ? 0 : 1;

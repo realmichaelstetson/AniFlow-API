@@ -18,6 +18,52 @@ function rewriteM3u8AudioQuery(urlStr: string, audioVal: string): string {
   return `${urlStr}${urlStr.includes("?") ? "&" : "?"}audio=${encodeURIComponent(audioVal)}`;
 }
 
+async function isAnimeM3u8CandidateHealthy(videoOrProxyUrl: string, baseUrl: string): Promise<boolean> {
+  if (!videoOrProxyUrl) return false;
+  let directTarget = videoOrProxyUrl;
+  let pk = "";
+  let referer = "";
+  try {
+    const parsed = new URL(videoOrProxyUrl, baseUrl);
+    if (parsed.pathname.includes("/api/proxy/m3u8")) {
+      directTarget = parsed.searchParams.get("url") || "";
+      pk = parsed.searchParams.get("pk") || "";
+      referer = parsed.searchParams.get("referer") || "";
+    }
+  } catch {}
+  if (!directTarget) return false;
+  // XOR-encrypted manifests carry `pk` and auto-refresh via token-refresher on the proxy
+  if (pk) return true;
+  try {
+    const headers: Record<string, string> = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+      Accept: "*/*",
+    };
+    if (referer) {
+      headers["Referer"] = referer;
+    } else if (
+      directTarget.includes("streamrip") ||
+      directTarget.includes("rousav") ||
+      directTarget.includes("vidly") ||
+      directTarget.includes("hikari")
+    ) {
+      headers["Referer"] = "https://vidly.pro/";
+    } else if (directTarget.includes("megaplay") || directTarget.includes("akirax")) {
+      headers["Referer"] = "https://megaplay.buzz/";
+    }
+    const res = await fetch(directTarget, {
+      headers,
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return false;
+    const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
+    return text.startsWith("#EXTM3U");
+  } catch {
+    return false;
+  }
+}
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
@@ -288,35 +334,40 @@ export async function GET(request: NextRequest) {
 
     // FAST-PATH: If caller is requesting direct .m3u8 stream playback (HLS video element)
     if (wantsM3u8) {
-      // 0. Katana (Vidly)
-      if (isKatanaParam && effectiveAniId) {
+      const m3u8Candidates: string[] = [];
+      const addCandidate = (candidate?: string | null) => {
+        if (!candidate) return;
+        const abs = candidate.startsWith("http") ? candidate : new URL(candidate, baseUrl).href;
+        if (!m3u8Candidates.includes(abs)) m3u8Candidates.push(abs);
+      };
+
+      const tryKatanaCandidates = async () => {
+        if (!effectiveAniId) return;
         try {
           if (isMultiLangOverride) {
             const kAll = await getVidlyKatanaSources(effectiveAniId, episode);
-            const langSrc =
-              kAll.sources.find((s) => s.audioTracks?.some((a) => a.id === targetAudioCode)) ||
-              kAll.sources[0];
-            if (langSrc?.videoUrl) {
-              return NextResponse.redirect(
-                new URL(rewriteM3u8AudioQuery(langSrc.videoUrl, targetAudioCode), baseUrl).href,
-                { status: 302, headers: CORS_HEADERS }
-              );
+            const sorted = [...kAll.sources].sort((a, b) => {
+              const aHas = a.audioTracks?.some((t) => t.id === targetAudioCode) ? 0 : 1;
+              const bHas = b.audioTracks?.some((t) => t.id === targetAudioCode) ? 0 : 1;
+              return aHas - bHas;
+            });
+            for (const s of sorted) {
+              addCandidate(rewriteM3u8AudioQuery(s.videoUrl, targetAudioCode));
             }
           } else {
             const targetAudio = serverParam.includes("dub") && !rawAudioParam ? "dub" : audio;
             const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, targetAudio);
-            if (kSrc?.videoUrl) {
-              return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
-                status: 302,
-                headers: CORS_HEADERS,
-              });
+            if (kSrc?.videoUrl) addCandidate(kSrc.videoUrl);
+            if (targetAudio === "dub") {
+              const kSub = await fetchVidlyKatanaSource(effectiveAniId, episode, "sub");
+              if (kSub?.videoUrl) addCandidate(kSub.videoUrl);
             }
           }
         } catch {}
-      }
+      };
 
-      // 1. Buzz
-      if (isBuzzParam && (anilistId || malId)) {
+      const tryBuzzCandidate = async () => {
+        if (!anilistId && !malId) return;
         try {
           const buzz = await resolveBuzzStream({
             anilistId,
@@ -324,34 +375,24 @@ export async function GET(request: NextRequest) {
             episode,
             type: audio,
           });
-          if (buzz?.m3u8) {
-            return NextResponse.redirect(new URL(buzz.m3u8, baseUrl).href, {
-              status: 302,
-              headers: CORS_HEADERS,
-            });
-          }
+          if (buzz?.m3u8) addCandidate(buzz.m3u8);
         } catch {}
-      }
+      };
 
-      // 2. Animex (Yuri & Zuri)
-      if (isAnimexMode && anilistId) {
+      const tryAnimexCandidate = async (provOverride?: string) => {
+        if (!anilistId) return;
         try {
           const animex = await resolveAnimexPlayStream({
             anilistId,
             episode,
             type: audio,
-            provider: providerParam || (serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
+            provider: provOverride || providerParam || (serverParam !== "flow" && !serverParam.startsWith("flow") ? serverParam : undefined),
             slug: slugParam || undefined,
             title: title || undefined,
           });
-          if (animex?.proxyM3u8) {
-            return NextResponse.redirect(new URL(animex.proxyM3u8, baseUrl).href, {
-              status: 302,
-              headers: CORS_HEADERS,
-            });
-          }
+          if (animex?.proxyM3u8) addCandidate(animex.proxyM3u8);
         } catch {}
-      }
+      };
 
       const isFlow2Req =
         serverParam.includes("kitty") ||
@@ -361,46 +402,61 @@ export async function GET(request: NextRequest) {
         serverParam.includes("hd-2") ||
         serverParam === "hd2";
 
-      // 3. Flow (Re:ANIME)
-      const flowServer = isFlow2Req ? "HD-2" : serverParam.includes("hd-1") || serverParam.includes("flow1") || serverParam === "hd1" ? "HD-1" : "all";
+      const tryFlowCandidate = async () => {
+        if (isReanimeCloudflareBlocked()) return;
+        const flowServer = isFlow2Req ? "HD-2" : serverParam.includes("hd-1") || serverParam.includes("flow1") || serverParam === "hd1" ? "HD-1" : "all";
+        const flowData = await findAndStream({
+          anilistId: anilistId || undefined,
+          query: title || (malId ? String(malId) : undefined),
+          episode,
+          type: audio,
+          server: flowServer,
+        }).catch(() => null);
+        if (flowData?.hls) {
+          const flowEffectiveAudio = flowData.audio_fallback ? "sub" : (flowData.audio || audio);
+          const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
+          const mainVParam = flowData.version ? `&v=${flowData.version}` : "";
+          const qParam = anilistId ? `&q=${anilistId}` : `&q=${encodeURIComponent(title)}`;
+          const epParam = `&ep=${episode}`;
+          const srvParam = `&server=${encodeURIComponent(flowData.server || "HD-1")}`;
+          addCandidate(`/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${flowEffectiveAudio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`);
+        }
+      };
 
-      const flowData = isReanimeCloudflareBlocked()
-        ? null
-        : await findAndStream({
-            anilistId: anilistId || undefined,
-            query: title || (malId ? String(malId) : undefined),
-            episode,
-            type: audio,
-            server: flowServer,
-          }).catch(() => null);
-
-      if (flowData?.hls) {
-        const flowEffectiveAudio = flowData.audio_fallback ? "sub" : (flowData.audio || audio);
-        const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
-        const mainVParam = flowData.version ? `&v=${flowData.version}` : "";
-        const qParam = anilistId ? `&q=${anilistId}` : `&q=${encodeURIComponent(title)}`;
-        const epParam = `&ep=${episode}`;
-        const srvParam = `&server=${encodeURIComponent(flowData.server || "HD-1")}`;
-        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${flowEffectiveAudio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`;
-        return NextResponse.redirect(new URL(proxyM3u8, baseUrl).href, {
-          status: 302,
-          headers: CORS_HEADERS,
-        });
+      // 1. Try the explicitly requested / primary server first
+      if (isKatanaParam) {
+        await tryKatanaCandidates();
+      } else if (isBuzzParam) {
+        await tryBuzzCandidate();
+      } else if (isAnimexMode) {
+        await tryAnimexCandidate();
+      } else {
+        await tryFlowCandidate();
       }
 
-      // 4. Fallback to Katana
-      if (effectiveAniId) {
-        try {
-          const kSrc =
-            (await fetchVidlyKatanaSource(effectiveAniId, episode, audio)) ||
-            (audio === "dub" ? await fetchVidlyKatanaSource(effectiveAniId, episode, "sub") : null);
-          if (kSrc?.videoUrl) {
-            return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
-              status: 302,
-              headers: CORS_HEADERS,
-            });
-          }
-        } catch {}
+      for (const candidateUrl of m3u8Candidates) {
+        if (await isAnimeM3u8CandidateHealthy(candidateUrl, baseUrl)) {
+          return NextResponse.redirect(candidateUrl, { status: 302, headers: CORS_HEADERS });
+        }
+      }
+
+      // 2. Fallback across remaining servers if primary returned dead/expired stream
+      const prevCount = m3u8Candidates.length;
+      await Promise.all([
+        isKatanaParam ? Promise.resolve() : tryKatanaCandidates(),
+        (!isKatanaParam && !isBuzzParam && !isAnimexMode) ? Promise.resolve() : tryFlowCandidate(),
+        isBuzzParam ? Promise.resolve() : tryBuzzCandidate(),
+        isAnimexMode ? Promise.resolve() : tryAnimexCandidate("yuri"),
+      ]);
+
+      for (const candidateUrl of m3u8Candidates.slice(prevCount)) {
+        if (await isAnimeM3u8CandidateHealthy(candidateUrl, baseUrl)) {
+          return NextResponse.redirect(candidateUrl, { status: 302, headers: CORS_HEADERS });
+        }
+      }
+
+      if (m3u8Candidates[0]) {
+        return NextResponse.redirect(m3u8Candidates[0], { status: 302, headers: CORS_HEADERS });
       }
 
       return NextResponse.json(
