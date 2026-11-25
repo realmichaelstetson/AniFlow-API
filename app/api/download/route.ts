@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { GET as playGET } from "@/app/api/play/route";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
 import { buildDownloadPlan, streamDownload } from "@/lib/episode-download";
+import { handleMovieDownload, handleTvDownload } from "@/lib/media-service";
+import { cleanAudioParam } from "@/lib/vidly";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -42,11 +44,32 @@ async function resolveTitle(anilistId: number | null, malId: number | null, fall
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+  const tmdbIdRaw = searchParams.get("tmdb_id") || searchParams.get("tmdbId");
+  const mediaType = searchParams.get("type");
+
+  if (tmdbIdRaw) {
+    const tmdbId = parseInt(tmdbIdRaw, 10);
+    const audio = searchParams.get("audio") || "english";
+    const quality = parseInt(searchParams.get("quality") || "0", 10) || 0;
+
+    if (mediaType === "movie" || (!searchParams.has("season") && !searchParams.has("episode") && !searchParams.has("ep"))) {
+      return handleMovieDownload(request, tmdbId, audio, quality);
+    }
+    if (mediaType === "tv" || searchParams.has("season") || searchParams.has("episode") || searchParams.has("ep")) {
+      const season = parseInt(searchParams.get("season") || searchParams.get("s") || "1", 10) || 1;
+      const episode = parseInt(searchParams.get("episode") || searchParams.get("ep") || "1", 10) || 1;
+      return handleTvDownload(request, tmdbId, season, episode, audio, quality);
+    }
+  }
+
   const anilistId = parseInt(searchParams.get("anilistId") || searchParams.get("anilist_id") || "", 10) || null;
   const malId = parseInt(searchParams.get("malId") || searchParams.get("mal_id") || "", 10) || null;
   const q = searchParams.get("q") || searchParams.get("title") || "";
   const episode = parseInt(searchParams.get("episode") || searchParams.get("ep") || "1", 10) || 1;
-  const audio = searchParams.get("audio") === "dub" ? "dub" : "sub";
+  const rawAudio = searchParams.get("audio");
+  const cleanAudio = rawAudio ? cleanAudioParam(rawAudio) : { code: "en", name: "English" };
+  const audio = cleanAudio.code === "ja" ? "sub" : cleanAudio.code === "en" ? "dub" : cleanAudio.code;
+  const targetLangCode = cleanAudio.code;
   const server = (searchParams.get("server") || "flow").toLowerCase();
   const quality = parseInt(searchParams.get("quality") || "0", 10) || 0;
 
@@ -76,7 +99,7 @@ export async function GET(request: NextRequest) {
 
   let plan;
   try {
-    plan = await buildDownloadPlan(playlistUrl, audio, quality, request.signal);
+    plan = await buildDownloadPlan(playlistUrl, targetLangCode, quality, request.signal);
   } catch (err: any) {
     return errorResponse(502, "PLAYLIST_ERROR", err?.message || "Failed to read stream playlist");
   }

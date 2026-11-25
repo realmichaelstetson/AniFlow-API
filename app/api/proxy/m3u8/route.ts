@@ -6,6 +6,7 @@ import { decryptFlixStream, findAndStream } from "@/lib/reanime";
 import { getFreshStreamToken } from "@/lib/token-refresher";
 import { isStreamTokenExpired } from "@/lib/token-utils";
 import { isSafePublicUrl } from "@/shared/validators";
+import { cleanAudioParam, normalizeLanguage } from "@/lib/vidly";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +47,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   let targetUrl = searchParams.get("url");
   let pk = searchParams.get("pk") || "";
-  const audio = searchParams.get("audio") || "sub";
+  const audio = searchParams.get("audio") || "english";
   const referer = searchParams.get("referer") || "";
   const origin = searchParams.get("origin") || "";
   const ua = searchParams.get("ua") || "";
@@ -113,7 +114,14 @@ export async function GET(request: NextRequest) {
 
     let effectiveReferer = referer;
     if (!effectiveReferer) {
-      if (targetUrl.includes("hikari") || targetUrl.includes("streamrip.fun") || targetUrl.includes("vidly")) {
+      if (
+        targetUrl.includes("hikari") ||
+        targetUrl.includes("streamrip.fun") ||
+        targetUrl.includes("vidly") ||
+        targetUrl.includes("rousav.tech") ||
+        targetUrl.includes("hakunaymatata.com") ||
+        targetUrl.includes("workers.dev")
+      ) {
         effectiveReferer = "https://vidly.pro/";
       } else if (targetUrl.includes("flixcloud") || targetUrl.includes("atomic4cdn")) {
         effectiveReferer = "https://flixcloud.cc/";
@@ -207,14 +215,64 @@ export async function GET(request: NextRequest) {
       const baseUrl = targetUrl;
       const lines = content.split("\n");
       const rewrittenLines: string[] = [];
-      const audioMediaLines: Array<{ line: string; isEng: boolean; isJpn: boolean }> = [];
+      const audioMediaLines: Array<{ line: string; isMatch: boolean; wasDefault: boolean; groupId: string }> = [];
+
+      const setHlsFlag = (mediaLine: string, attr: "DEFAULT" | "AUTOSELECT", val: "YES" | "NO") => {
+        const re = new RegExp(`${attr}=(YES|NO)`, "gi");
+        if (re.test(mediaLine)) {
+          return mediaLine.replace(re, `${attr}=${val}`);
+        }
+        return `${mediaLine},${attr}=${val}`;
+      };
+
+      const flushAudioMediaLines = () => {
+        if (audioMediaLines.length === 0) return;
+        const groupHasMatch = new Set<string>();
+        const groupSelectedDone = new Set<string>();
+        for (const item of audioMediaLines) {
+          if (item.isMatch) groupHasMatch.add(item.groupId);
+        }
+        const sortedAudio = [...audioMediaLines].sort((a, b) => {
+          if (a.isMatch && !b.isMatch) return -1;
+          if (!a.isMatch && b.isMatch) return 1;
+          return 0;
+        });
+        for (const item of sortedAudio) {
+          const hasMatchInGroup = groupHasMatch.has(item.groupId);
+          let shouldBeDefault = false;
+          if (hasMatchInGroup) {
+            if (item.isMatch && !groupSelectedDone.has(item.groupId)) {
+              shouldBeDefault = true;
+              groupSelectedDone.add(item.groupId);
+            }
+          } else {
+            const firstOrDefault =
+              sortedAudio.find((x) => x.groupId === item.groupId && x.wasDefault) ||
+              sortedAudio.find((x) => x.groupId === item.groupId);
+            if (item === firstOrDefault && !groupSelectedDone.has(item.groupId)) {
+              shouldBeDefault = true;
+              groupSelectedDone.add(item.groupId);
+            }
+          }
+          let outLine = setHlsFlag(item.line, "DEFAULT", shouldBeDefault ? "YES" : "NO");
+          outLine = setHlsFlag(outLine, "AUTOSELECT", shouldBeDefault ? "YES" : "NO");
+          rewrittenLines.push(outLine);
+        }
+        audioMediaLines.length = 0;
+      };
 
       const resolveUrlWithBase = (relative: string): string => {
         try {
-          const u = new URL(relative, baseUrl);
+          const trimmedRel = relative.trim();
+          if (trimmedRel.startsWith("http://") || trimmedRel.startsWith("https://")) {
+            return new URL(trimmedRel).href;
+          }
+          const u = new URL(trimmedRel, baseUrl);
           if (!u.search) {
             const baseParsed = new URL(baseUrl);
-            if (baseParsed.search) u.search = baseParsed.search;
+            if (baseParsed.search && !baseParsed.searchParams.has("url")) {
+              u.search = baseParsed.search;
+            }
           }
           return u.href;
         } catch {
@@ -248,32 +306,19 @@ export async function GET(request: NextRequest) {
             });
           }
 
-          const isEng = /NAME="English"/i.test(audioLine) || /LANGUAGE="eng?"/i.test(audioLine);
-          const isJpn = /NAME="Native"/i.test(audioLine) || /LANGUAGE="jp[an]?"/i.test(audioLine);
+          const targetAudio = cleanAudioParam(audio);
+          const langMatch = audioLine.match(/LANGUAGE="([^"]+)"/);
+          const nameMatch = audioLine.match(/NAME="([^"]+)"/);
+          const groupMatch = audioLine.match(/GROUP-ID="([^"]+)"/);
+          const wasDefault = /DEFAULT=YES/i.test(audioLine);
+          const groupId = groupMatch ? groupMatch[1] : "__default__";
+          const trackLang = normalizeLanguage(langMatch ? langMatch[1] : "", nameMatch ? nameMatch[1] : "");
+          const isMatch =
+            trackLang.code === targetAudio.code ||
+            (targetAudio.code === "en" && (/English/i.test(audioLine) || /LANGUAGE="eng?"/i.test(audioLine))) ||
+            (targetAudio.code === "ja" && (/Native|Japanese/i.test(audioLine) || /LANGUAGE="jp[an]?"/i.test(audioLine)));
 
-          if (audio === "dub") {
-            if (isEng) {
-              audioLine = audioLine
-                .replace(/DEFAULT=(YES|NO)/gi, "DEFAULT=YES")
-                .replace(/AUTOSELECT=(YES|NO)/gi, "AUTOSELECT=YES");
-            } else if (isJpn) {
-              audioLine = audioLine
-                .replace(/DEFAULT=(YES|NO)/gi, "DEFAULT=NO")
-                .replace(/AUTOSELECT=(YES|NO)/gi, "AUTOSELECT=NO");
-            }
-          } else {
-            if (isJpn) {
-              audioLine = audioLine
-                .replace(/DEFAULT=(YES|NO)/gi, "DEFAULT=YES")
-                .replace(/AUTOSELECT=(YES|NO)/gi, "AUTOSELECT=YES");
-            } else if (isEng) {
-              audioLine = audioLine
-                .replace(/DEFAULT=(YES|NO)/gi, "DEFAULT=NO")
-                .replace(/AUTOSELECT=(YES|NO)/gi, "AUTOSELECT=NO");
-            }
-          }
-
-          audioMediaLines.push({ line: audioLine, isEng, isJpn });
+          audioMediaLines.push({ line: audioLine, isMatch, wasDefault, groupId });
           continue;
         }
 
@@ -285,18 +330,7 @@ export async function GET(request: NextRequest) {
             trimmed.startsWith("#EXT-X-MAP:") ||
             trimmed.startsWith("#EXT-X-KEY:"))
         ) {
-          const sortedAudio = [...audioMediaLines].sort((a, b) => {
-            if (audio === "dub") {
-              if (a.isEng && !b.isEng) return -1;
-              if (!a.isEng && b.isEng) return 1;
-            } else {
-              if (a.isJpn && !b.isJpn) return -1;
-              if (!a.isJpn && b.isJpn) return 1;
-            }
-            return 0;
-          });
-          sortedAudio.forEach((item) => rewrittenLines.push(item.line));
-          audioMediaLines.length = 0;
+          flushAudioMediaLines();
         }
 
         // Rewrite #EXT-X-MEDIA other than AUDIO
@@ -407,19 +441,7 @@ export async function GET(request: NextRequest) {
         rewrittenLines.push(line);
       }
 
-      if (audioMediaLines.length > 0) {
-        const sortedAudio = [...audioMediaLines].sort((a, b) => {
-          if (audio === "dub") {
-            if (a.isEng && !b.isEng) return -1;
-            if (!a.isEng && b.isEng) return 1;
-          } else {
-            if (a.isJpn && !b.isJpn) return -1;
-            if (!a.isJpn && b.isJpn) return 1;
-          }
-          return 0;
-        });
-        sortedAudio.forEach((item) => rewrittenLines.push(item.line));
-      }
+      flushAudioMediaLines();
 
       return new NextResponse(rewrittenLines.join("\n"), {
         status: 200,

@@ -8,6 +8,10 @@ interface PageProps {
     ticket?: string;
     anilistId?: string;
     malId?: string;
+    tmdb_id?: string;
+    tmdbId?: string;
+    type?: "anime" | "movie" | "tv";
+    season?: string;
     episode?: string;
     audio?: string;
     server?: string;
@@ -20,8 +24,11 @@ export default function GeneralEmbedPage({ searchParams }: PageProps) {
   const ticketKey = searchParams.t || searchParams.ticket;
   let anilistId: number | null = searchParams.anilistId ? parseInt(searchParams.anilistId, 10) : null;
   let malId: number | null = searchParams.malId ? parseInt(searchParams.malId, 10) : null;
+  let tmdbId: number | null = searchParams.tmdb_id || searchParams.tmdbId ? parseInt((searchParams.tmdb_id || searchParams.tmdbId)!, 10) : null;
+  let seasonNumber: number = searchParams.season ? parseInt(searchParams.season, 10) : 1;
   let episodeNumber: number = searchParams.episode ? parseInt(searchParams.episode, 10) : 1;
-  let audio: "sub" | "dub" = (searchParams.audio === "dub" ? "dub" : "sub") as "sub" | "dub";
+  let audio: string = searchParams.audio || "english";
+  let mediaType = searchParams.type || (tmdbId ? (searchParams.season ? "tv" : "movie") : "anime");
 
   if (ticketKey && ticketStore.has(ticketKey)) {
     const ticketData = ticketStore.get(ticketKey)!;
@@ -34,8 +41,11 @@ export default function GeneralEmbedPage({ searchParams }: PageProps) {
   return (
     <Suspense fallback={<div className="w-screen h-screen bg-black" />}>
       <EmbedPageClient
+        mediaType={mediaType}
         anilistId={anilistId}
         malId={malId}
+        tmdbId={tmdbId}
+        seasonNumber={seasonNumber}
         episodeNumber={episodeNumber}
         audio={audio}
         ticket={ticketKey}

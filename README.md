@@ -5,7 +5,7 @@
 <h1 align="center">AniFlow API</h1>
 
 <p align="center">
-  Self-hostable anime embed API and HLS player. Pass an AniList or MAL ID, get a working stream.
+  Self-hostable streaming embed API, HLS proxy, downloader, and liquid-glass player for Anime, Movies, and TV Shows. Pass an AniList, MyAnimeList, or TMDB ID and get a playable stream.
 </p>
 
 <p align="center">
@@ -18,58 +18,88 @@
 
 ---
 
-## Overview
+## What's New
 
-AniFlow is a self-hostable backend and player for embedding anime on your own site or app. You can drop in a single iframe, call the REST API, or point any HLS-capable player at a plain `.m3u8` URL.
+### Added
+- **Movies & TV Shows Support (TMDB):** Full embed, JSON Play API, direct `.m3u8`/`.meu8` streaming, and `.mp4` downloads powered by TMDB metadata (`lib/tmdb.ts`) and Vidly media providers (`Edge`, `Prism`, `Flux`, `Nimbus`, `Comet`, `Citadel`) via `lib/media-service.ts`.
+- **Flexible Slug Routes:** Unified `/embed/{anime|movie|tv}/...`, `/meu8/{anime|movie|tv}/...`, `/m3u8/{anime|movie|tv}/...`, and `/api/download/{anime|movie|tv}/...` routes (`lib/route-utils.ts`) supporting readable inline audio paths such as `/audio="english"`, `/audio="polish"`, or `/audio="japanese"`.
+- **Stream Download Endpoints:** Added Movie & TV download routes alongside refactored Anime download endpoints (`/api/download/ani/...`, `/api/download/mal/...`, `/api/download/anime/...`, `/api/download/movie/...`, `/api/download/tv/...`) with `?quality=1080|720|480` selection.
+- **Dedicated Play API Endpoints:** Added `/api/anime/play`, `/api/movie/play`, and `/api/tv/play` JSON/M3U8 endpoints.
+- **Interactive Documentation & Playground:** Updated the home page (`app/page.tsx`) with a live playground supporting Anime, Movies, and TV Shows, dynamic server/audio pickers, code examples, parameter tables, and `postMessage` docs.
 
-Key points:
-
-- **Six redundant servers** (`Katana`, `Flow`, `Kitty`, `Yuri`, `Zuri`, `Buzz`) with per-request server selection.
-- **Multi-audio HLS streaming:** Multi-language audio tracks (Japanese, English, Spanish, French, German, Italian, Portuguese, Russian, Hindi, Tamil, Telugu, Kannada, Malayalam, etc.) selectable with vector country flags.
-- **Direct HLS endpoints** at `/meu8/ani/...` and `/meu8/mal/...`, usable from VLC, mpv, ExoPlayer, AVPlayer or a plain `<video>` tag.
-- **Dub verification:** Servers that silently fall back to Japanese audio are excluded from the dub list.
-- **Dual ID resolution:** AniList and MyAnimeList IDs are both supported (`/embed/ani/...`, `/embed/mal/...`).
-- **Intro/outro skipping:** Op/ED timestamps using Re:ANIME timestamps and the AniSkip API, adjusted for episode duration.
-- **Multilingual subtitle proxy:** Clean single-track-per-language subtitles with country flags and styling customization. The selected track carries over across server changes.
-- **Liquid glass player:** Floating controls with a unified **Audio & Subtitles** selector, consolidated **Preferences** panel, and two-way `postMessage` bus for remote control.
+### Changed
+- **English Audio Default for Anime:** All Anime routes (`/embed/...`, `/api/play`, `/api/anime/play`, `/meu8/...`, `/m3u8/...`, `/api/download/...`, `/api/proxy/m3u8`) and the playground now default to **English (`english` / `dub`)**, automatically falling back to Japanese (`sub`) with a player notification when an episode has no authentic English dub.
+- **Real Country-Only Audio Detection:** Normalized 45+ ISO languages with verified country flags in `lib/vidly.ts` and `embed-player.tsx`. Removed hardcoded `[English, Japanese]` fallback placeholders on Movies/TV and filtered out unrecognized/non-country tracks (`Unknown`, `8. Unknown`, `und`, synthetic `main`, etc.) across API responses, HLS manifests, the Audio & Subtitles menu, and the playground.
+- **Cross-Server Audio & Route Switching:** Clicking any available language in the player's **Audio & Subtitles** menu either switches HLS tracks on the fly within the active multi-audio stream or automatically switches playback to the highest-priority server providing that language, keeping active Audio (`✓`) and Server Route indicators accurate. When `?server=` is omitted on Movie/TV embeds, the player automatically selects the server matching the requested audio language.
+- **Proxy Improvements:** Updated `/api/proxy/m3u8` to rewrite `DEFAULT`/`AUTOSELECT` flags per `#EXT-X-MEDIA:TYPE=AUDIO` group according to the requested language, and hardened `/api/proxy/segment` and `/api/proxy/subtitles`.
 
 ---
 
-## Servers
+## Overview
+
+AniFlow is a self-hostable backend and HLS player for embedding **Anime**, **Movies**, and **TV Shows** in any website or application. Use the drop-in iframe player, consume the JSON REST API, stream directly to VLC/mpv/`<video>` via `.meu8`/`.m3u8`, or serve direct MP4 downloads.
+
+Key capabilities:
+
+- **Anime, Movies & TV Shows:** Supports **AniList** (`ani`), **MyAnimeList** (`mal`), and **TMDB** (`movie`, `tv`) IDs.
+- **Six Anime Servers:** `Katana`, `Flow`, `Kitty`, `Yuri`, `Zuri`, and `Buzz` with English Dub default and verified Japanese Sub fallback.
+- **Six Movie/TV Providers:** `Edge` (`singularity` / `evion`), `Prism`, `Flux`, `Nimbus`, `Comet`, and `Citadel` with dynamic country-based multi-audio discovery.
+- **Country-Verified Multi-Audio:** Detects real spoken languages with vector country flags across HLS manifests and video sources—never displaying placeholder tracks or `Unknown` labels.
+- **Direct HLS & MP4 Downloads:** Point VLC, mpv, ExoPlayer, AVPlayer, or `hls.js` at `/meu8/...` or `/m3u8/...`, or download remuxed streams via `/api/download/...`.
+- **Intro/Outro Skipping:** OP/ED timestamps using native Re:ANIME markers (`Flow`, `Kitty`) and AniSkip (`Katana`, `Yuri`, `Zuri`, `Buzz`), scaled to episode duration.
+- **Multilingual Subtitle Proxy:** Clean single-track-per-language subtitles (VTT/SRT/ASS converted to WebVTT) with custom styling, persisted across server switches.
+- **Liquid Glass Player:** Floating dark UI with a two-column **Audio & Subtitles** menu, **Preferences** panel, quality switcher, and two-way `postMessage` API.
+
+---
+
+## Servers & Audio Resolution
+
+### Anime Servers
 
 | Server | Upstream | Audio | Notes |
 | :--- | :--- | :--- | :--- |
-| **Katana** | Vidly (Hikari) | `SUB`, `DUB`, `MULTI` | High-performance multi-audio engine supporting Japanese, English, European dubs, and Indian regional dubs. |
-| **Flow** | Re:ANIME (HD-1) | `SUB`, `DUB` | Primary server. Uses Re:ANIME's native OP/ED timestamps. |
-| **Kitty** | Re:ANIME (HD-2) | `SUB`, `DUB` | Backup mirror for Flow, with identical skip-time support. |
-| **Yuri** | AniEmbed Core | `SUB`, `DUB` | Soft subtitles with up to 16 external languages. |
-| **Zuri** | AniEmbed Zuna | `SUB` only | Japanese-audio backup stream. |
-| **Buzz** | MegaPlay Buzz | `SUB`, `DUB` | Served through the edge `.m3u8` proxy with dynamic key handling. |
+| **Katana** | Vidly (Hikari) | `DUB`, `SUB`, `MULTI` | High-performance multi-audio HLS engine (English default, Japanese, European, and regional dubs). |
+| **Flow** | Re:ANIME (HD-1) | `DUB`, `SUB` | Primary backup server with Re:ANIME's native OP/ED skip timestamps. |
+| **Kitty** | Re:ANIME (HD-2) | `DUB`, `SUB` | Mirror for Flow with identical skip-time support. |
+| **Yuri** | AniEmbed Core | `DUB`, `SUB` | Soft subtitles supporting multiple external languages. |
+| **Zuri** | AniEmbed Zuna | `SUB` only | Japanese-audio fallback stream. |
+| **Buzz** | MegaPlay Buzz | `DUB`, `SUB` | Served through the edge `.m3u8` proxy with dynamic segment handling. |
 
-### Dub verification
+#### Dub Verification
+Some upstream anime hosts silently serve Japanese audio when an English dub is missing. AniFlow validates dub streams at both API and player layers:
+- Audio tracks and manifests are inspected before selection.
+- Servers that silently fall back to Japanese audio are excluded from the Dub roster (`audio_fallback`).
+- If an episode has no genuine English dub across any provider, the player automatically falls back to Japanese (`Sub`) with an informative toast and selects the matching track in the menu.
 
-Some providers return the original Japanese audio when an English dub doesn't exist for an episode, without any indication. AniFlow checks for this at both the API and player level:
+### Movies & TV Servers
 
-- Audio streams are inspected before presentation.
-- A server that falls back to Japanese audio is excluded from the dub list.
-- If an anime has no English dub at all, the Dub option is disabled and the player automatically selects Sub with an informative notification.
+| Server | API ID | Capabilities |
+| :--- | :--- | :--- |
+| **Edge** | `singularity` (Movies) / `evion` (TV) | Primary HD/4K multi-audio source. |
+| **Prism** | `prism` | Multi-language HLS streams (e.g., English, Polish, Spanish, etc. when offered by upstream). |
+| **Flux** | `flux` | HD video source with embedded/source language detection. |
+| **Nimbus** | `nimbus` | HD mirror source. |
+| **Comet** | `comet` | Backup stream source. |
+| **Citadel** | `citadel` | Secondary multi-source mirror. |
+
+#### Country-Only Audio Filtering & Auto Server Switching
+- Movie and TV audio menus display **only real recognized country languages** actually present in the resolved video sources or HLS master manifests.
+- Unlabeled (`und`, `main`) or non-country strings (`Unknown`, `8. Unknown`, `other`) are filtered out automatically, and fake Japanese placeholders are never injected when a movie/TV source does not provide Japanese audio.
+- Clicking any language in the player switches the active HLS `audioTrack` immediately if present on the current server, or seamlessly switches to the best server offering that language.
 
 ---
 
-## Player
+## Player Features
 
-- **Liquid glass design:** Dark minimalist interface crafted with blurred glass cards, clean borders, and smooth transitions. Controls automatically hide during playback.
+- **Liquid glass design:** Minimalist dark controls with blurred glass panels and auto-hide during playback.
 - **Unified Audio & Subtitles menu:**
-  - **Audio (Left column):** Select between all available audio tracks (Japanese, English, Spanish, German, French, Italian, Portuguese, Hindi, etc.) with vector country flags. Dynamically switches audio tracks in HLS on-the-fly, or seamlessly migrates to the matching Katana server.
-  - **Subtitles (Right column):** Select subtitles per language with flags. Single unique track per language, persisted in local storage.
-  - Independent smooth scrollbars with clean containment lines that never overlap options.
-- **Preferences menu:**
-  - Consolidated settings panel bringing together **Playback Speed** (0.25x – 2.0x), **Volume Slider**, **Volume Boost** (+200% Web Audio gain), and **Auto Skip** (Opening/Ending) toggles.
-- **Video Quality selector:**
-  - Adaptive bitrate or manual resolution selection (1080p, 720p, 480p, 360p).
-- **Skip intro/outro:** OP and ED segments are marked on the timeline. Skipping can be automatic or triggered via button. Flow and Kitty use native Re:ANIME timestamps; Yuri, Zuri, Buzz, and Katana use AniSkip with duration compensation.
-- **Subtitle styling dialog:** Configure font family (Sans, Anime, Serif, Mono), font size, font color, background opacity, and text outlines.
-- **Mobile gestures:** Tap to toggle controls, double-tap left or right to seek ±10 s, and automatic landscape lock in fullscreen.
+  - **Audio (Left column):** Displays only real country-flagged audio tracks available across the stream/sources. Clicking a track switches tracks live inside HLS or swaps to the server carrying that language.
+  - **Subtitles (Right column):** Deduplicated single-track-per-language subtitles with country flags, synced across server changes.
+- **Preferences menu:** **Playback Speed** (`0.25x` – `2.0x`), **Volume Slider**, **Volume Boost** (up to `+200%` Web Audio gain), and **Auto Skip** (Opening / Ending) toggles.
+- **Server Route menu:** Switch between Anime Dub/Sub providers or distinct Movie/TV servers showing active language badges (`2 Audio`, `Polish`, `1080p`).
+- **Video Quality selector:** Adaptive bitrate (`Auto`) or manual resolution locking (`1080p`, `720p`, `480p`, `360p`).
+- **Subtitle styling dialog:** Font family (`Sans`, `Anime`, `Serif`, `Mono`), font size, text color, background opacity, shadow, and outlines.
+- **Mobile gestures:** Tap to toggle controls, double-tap left/right to seek `±10s`, and automatic landscape lock in fullscreen.
 
 ---
 
@@ -77,135 +107,132 @@ Some providers return the original Japanese audio when an English dub doesn't ex
 
 ### Embed URLs
 
-AniList:
+#### Flexible Slug Routes (Recommended)
+
+Anime (AniList or MAL):
 ```http
-GET /embed/ani/{anilistId}/{episode}/{audio}?server={server}
+GET /embed/anime/{ani|mal}/{id}/{episode}/audio="{language}"?server={server}
 ```
 
-MyAnimeList:
+Movies (TMDB ID):
 ```http
+GET /embed/movie/{tmdb_id}/audio="{language}"?server={server}
+```
+
+TV Shows (TMDB ID):
+```http
+GET /embed/tv/{tmdb_id}/{episode}/audio="{language}"?season={season}&server={server}
+GET /embed/tv/{tmdb_id}/{season}/{episode}/audio="{language}"?server={server}
+```
+
+#### Legacy / Direct Anime Embed Routes
+
+```http
+GET /embed/ani/{anilistId}/{episode}?server={server}
+GET /embed/ani/{anilistId}/{episode}/{audio}?server={server}
+GET /embed/mal/{malId}/{episode}?server={server}
 GET /embed/mal/{malId}/{episode}/{audio}?server={server}
 ```
 
-**Path parameters**
-
-| Parameter | Type | Required | Description |
-| :--- | :--- | :--- | :--- |
-| `anilistId` / `malId` | `number` | Yes | Anime ID from AniList or MyAnimeList. |
-| `episode` | `number` | Yes | Episode number (e.g. `1`, `12`). |
-| `audio` | `string` | No | `sub` (default) or `dub`. |
-
-**Query parameters**
+**Parameters**
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `server` | `string` | `katana-sub` | One of `katana`, `flow`, `kitty`, `yuri`, `zuri`, `buzz`. |
-| `startAt` / `progress` | `number` | `0` | Start playback at this offset, in seconds. |
-| `autoskipIntro` | `1` \| `0` | `1` | Skip opening themes automatically. |
-| `autoskipOutro` | `1` \| `0` | `1` | Skip ending themes automatically. |
-| `parentHost` | `string` | auto | Parent domain, for cases where the referer is stripped. |
+| `id` / `anilistId` / `malId` / `tmdb_id` | `number` | Required | ID from AniList, MyAnimeList, or TMDB. |
+| `season` | `number` | `1` | TV season number (path segment or `?season=`). |
+| `episode` | `number` | `1` | Episode number. |
+| `audio` | `string` | `english` | Language name or code (`english`, `japanese`, `polish`, `spanish`, `german`, `french`, `sub`, `dub`, etc.). Works in path (`audio="english"` or `dub`/`sub`) or query (`?audio=...`). |
+| `server` | `string` | Auto (`katana-dub` for anime; language-matched server for movie/tv) | Anime: `katana`, `flow`, `kitty`, `yuri`, `zuri`, `buzz`. Movies/TV: `singularity`, `evion`, `prism`, `flux`, `nimbus`, `comet`, `citadel`. |
+| `startAt` / `progress` | `number` | `0` | Initial playback offset in seconds. |
+| `autoskipIntro` | `1` \| `0` | `1` | Automatically skip anime intros. |
+| `autoskipOutro` | `1` \| `0` | `1` | Automatically skip anime outros. |
+| `parentHost` | `string` | Auto | Parent domain hint when `Referer` is stripped. |
 
 ---
 
-### Direct HLS streams
+### Direct HLS Streams (`/meu8` & `/m3u8`)
 
-Use these endpoints to stream without an iframe, in a `<video>` tag, a mobile app, VLC or mpv.
+Stream raw proxied `#EXTM3U` playlists in VLC, mpv, ExoPlayer, AVPlayer, or `<video>` with the requested audio track marked as default:
 
-AniList:
 ```http
-GET /meu8/ani/{anilistId}/{episode}/{audio}?server={server}
+GET /meu8/anime/{ani|mal}/{id}/{episode}/audio="{language}"
+GET /meu8/movie/{tmdb_id}/audio="{language}"
+GET /meu8/tv/{tmdb_id}/{episode}/audio="{language}"?season={season}
+GET /meu8/tv/{tmdb_id}/{season}/{episode}/audio="{language}"
 ```
 
-MyAnimeList:
-```http
-GET /meu8/mal/{malId}/{episode}/{audio}?server={server}
-```
+Alias routes are also available under `/m3u8/...`, `/meu8/ani/...`, `/meu8/mal/...`, `/api/m3u8/ani/...`, and `/api/m3u8/mal/...`.
 
 Examples:
 ```bash
-# English dub, episode 1, in VLC
-vlc "https://your-domain.com/meu8/ani/16498/1/dub"
+# Default English anime stream in VLC
+vlc "https://your-domain.com/meu8/anime/ani/16498/1"
 
-# Japanese sub, episode 1, using the Katana server, in mpv
-mpv "https://your-domain.com/meu8/ani/16498/1/sub?server=katana"
+# Japanese subbed anime via Katana in mpv
+mpv "https://your-domain.com/meu8/anime/ani/16498/1/audio=%22japanese%22?server=katana"
 
-# Inspect the response headers
-curl -IL "https://your-domain.com/meu8/mal/16498/1/dub"
+# Movie with Polish audio preference
+vlc "https://your-domain.com/meu8/movie/550/audio=%22polish%22"
+
+# TV show episode S01E01 with English audio
+mpv "https://your-domain.com/meu8/tv/1399/1/1/audio=%22english%22"
 ```
-
-- The response is an `#EXTM3U` manifest with `Content-Type: application/vnd.apple.mpegurl`.
-- `audio` (`sub` or `dub`) goes in the path, and `server` in the query string.
-- The same streams are also available at `/m3u8/ani/...` and `/m3u8/mal/...`, or via `GET /api/play?anilistId=16498&episode=1&format=m3u8`.
 
 ---
 
-### REST endpoints
+### Download Endpoints
 
-#### `GET /api/play`
-
-Returns stream manifests, proxy URLs, audio tracks, and subtitle tracks as JSON.
+Stream downloadable MPEG-TS/MP4 video files directly:
 
 ```http
-GET /api/play?anilistId=16498&episode=1&audio=sub&server=katana
+GET /api/download/anime/{ani|mal}/{id}/{episode}/audio="{language}"?quality={1080|720|480}&server={server}
+GET /api/download/movie/{tmdb_id}/audio="{language}"?quality={1080|720|480}&server={server}
+GET /api/download/tv/{tmdb_id}/{season}/{episode}/audio="{language}"?quality={1080|720|480}&server={server}
+GET /api/download?anilistId={id}&episode={n}&audio=english
 ```
 
-Add `&format=m3u8` to get the raw playlist instead of JSON.
+Also available at `/api/download/ani/{anilistId}/{episode}/{audio}` and `/api/download/mal/{malId}/{episode}/{audio}`.
+
+---
+
+### JSON Play & Metadata Endpoints
+
+#### `GET /api/play` & `GET /api/anime/play`
+Resolves anime stream manifests, all available servers (`sources`), audio tracks, subtitles, and skip timestamps:
+```http
+GET /api/anime/play?anilistId=16498&episode=1&audio=en
+```
+Add `&format=m3u8` to receive the proxied playlist directly instead of JSON.
+
+#### `GET /api/movie/play`
+Resolves movie metadata (via TMDB), all available Vidly sources, country-verified `audioTracks`, and subtitles:
+```http
+GET /api/movie/play?tmdb_id=550&audio=en
+```
+
+#### `GET /api/tv/play`
+Resolves TV series & episode metadata (via TMDB), available Vidly sources, `audioTracks`, and subtitles:
+```http
+GET /api/tv/play?tmdb_id=1399&season=1&episode=1&audio=en
+```
 
 #### `POST /api/play`
-
-Creates a playback ticket and returns the stream, audio tracks, subtitles, and skip times.
-
+Creates a playback ticket and returns stream metadata and skip timestamps:
 ```bash
 curl -X POST https://your-domain.com/api/play \
   -H "Content-Type: application/json" \
   -d '{
     "anilistId": 16498,
     "episode": 1,
-    "audio": "sub",
+    "audio": "english",
     "server": "katana",
     "startAt": 0
   }'
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "ticket": "9f8a3d1b-...",
-  "embedUrl": "https://your-domain.com/embed?t=9f8a3d1b-...",
-  "stream": {
-    "url": "https://your-domain.com/api/proxy/m3u8?url=...",
-    "format": "hls",
-    "server": "Katana",
-    "audio": "sub",
-    "audioTracks": [
-      { "id": "ja", "name": "Japanese", "countryCode": "jp", "flag": "🇯🇵" },
-      { "id": "en", "name": "English", "countryCode": "gb", "flag": "🇬🇧" }
-    ],
-    "subtitles": [
-      { "language": "English", "url": "https://your-domain.com/api/proxy/subtitles?url=..." }
-    ],
-    "skipTimes": {
-      "intro": { "start": 90, "end": 180 },
-      "outro": { "start": 1320, "end": 1410 }
-    }
-  }
-}
-```
-
-#### `GET /api/anime/skip-times`
-
-Returns OP/ED timestamps from AniSkip, scaled to the given episode duration.
-
+#### Skip Times
 ```http
 GET /api/anime/skip-times?malId=16498&episode=1&duration=1440
-```
-
-#### `GET /api/anime/flow-skip-times`
-
-Returns Re:ANIME's native skip markers, used by Flow and Kitty.
-
-```http
 GET /api/anime/flow-skip-times?anilistId=16498&episode=1
 ```
 
@@ -216,9 +243,20 @@ GET /api/anime/flow-skip-times?anilistId=16498&episode=1
 ### HTML iframe
 
 ```html
+<!-- Anime (defaults to English Dub with Sub fallback) -->
 <div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; border-radius: 16px;">
   <iframe
-    src="https://your-domain.com/embed/ani/16498/1/sub?server=katana&autoskipIntro=1"
+    src='https://your-domain.com/embed/anime/ani/16498/1/audio="english"'
+    style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;"
+    allowfullscreen
+    allow="autoplay; fullscreen; picture-in-picture"
+  ></iframe>
+</div>
+
+<!-- Movie (TMDB 550) -->
+<div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; border-radius: 16px;">
+  <iframe
+    src='https://your-domain.com/embed/movie/550/audio="english"'
     style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0;"
     allowfullscreen
     allow="autoplay; fullscreen; picture-in-picture"
@@ -231,27 +269,38 @@ GET /api/anime/flow-skip-times?anilistId=16498&episode=1
 ```tsx
 import React from "react";
 
-interface AnimePlayerProps {
-  anilistId: number;
+interface MediaEmbedProps {
+  mediaType?: "anime" | "movie" | "tv";
+  id: number;
+  season?: number;
   episode?: number;
-  audio?: "sub" | "dub";
-  server?: "katana" | "flow" | "kitty" | "yuri" | "zuri" | "buzz";
-  autoSkip?: boolean;
+  audio?: string;
+  server?: string;
 }
 
-export function AnimePlayer({
-  anilistId,
+export function MediaPlayer({
+  mediaType = "anime",
+  id,
+  season = 1,
   episode = 1,
-  audio = "sub",
-  server = "katana",
-  autoSkip = true,
-}: AnimePlayerProps) {
-  const embedUrl = `https://your-domain.com/embed/ani/${anilistId}/${episode}/${audio}?server=${server}&autoskipIntro=${autoSkip ? 1 : 0}`;
+  audio = "english",
+  server,
+}: MediaEmbedProps) {
+  const basePath =
+    mediaType === "movie"
+      ? `/embed/movie/${id}/audio="${encodeURIComponent(audio)}"`
+      : mediaType === "tv"
+      ? `/embed/tv/${id}/${season}/${episode}/audio="${encodeURIComponent(audio)}"`
+      : `/embed/anime/ani/${id}/${episode}/audio="${encodeURIComponent(audio)}"`;
+
+  const src = server
+    ? `https://your-domain.com${basePath}?server=${encodeURIComponent(server)}`
+    : `https://your-domain.com${basePath}`;
 
   return (
     <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-black shadow-2xl">
       <iframe
-        src={embedUrl}
+        src={src}
         className="w-full h-full border-0"
         allow="autoplay; fullscreen; picture-in-picture"
         allowFullScreen
@@ -263,106 +312,114 @@ export function AnimePlayer({
 
 ### HTML5 `<video>` with HLS.js
 
-Load a raw playlist without an iframe, using [hls.js](https://github.com/video-dev/hls.js/) or the native HLS support in Safari and iOS:
-
 ```html
 <video id="video" controls autoplay playsinline style="width: 100%; max-width: 800px; border-radius: 12px;"></video>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
 <script>
-  const video = document.getElementById('video');
-  const streamUrl = 'https://your-domain.com/meu8/ani/16498/1/sub';
+  const video = document.getElementById("video");
+  const streamUrl = "https://your-domain.com/meu8/anime/ani/16498/1";
 
   if (Hls.isSupported()) {
     const hls = new Hls();
     hls.loadSource(streamUrl);
     hls.attachMedia(video);
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    // Native HLS (Safari / iOS)
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
     video.src = streamUrl;
   }
 </script>
 ```
 
-### `postMessage` integration
+### `postMessage` Integration
 
-The embedded player sends events to the parent window and accepts commands from it.
+The embedded player emits events to the parent window and accepts structured control commands.
 
 Listening for events:
 ```javascript
 window.addEventListener("message", (event) => {
-  const data = event.data;
-  if (!data) return;
+  const payload = event.data;
+  if (!payload) return;
 
-  // Playback state changes
-  if (data.type === "PLAYER_EVENT") {
-    console.log("Player event:", data.data);
-    // Payload: { type: "play" | "pause" | "time" | "complete" | "error", currentTime, duration }
+  if (payload.type === "PLAYER_EVENT") {
+    console.log("Player event:", payload.data);
   }
 
-  // Watch progress, roughly once per second
-  if (data.type === "watching-log") {
-    console.log("Progress:", data.currentTime, "/", data.duration);
+  if (payload.type === "watching-log") {
+    console.log("Progress:", payload.currentTime, "/", payload.duration);
   }
 });
 ```
 
 Sending commands:
 ```javascript
-const playerIframe = document.getElementById("aniflow-player");
+const player = document.querySelector("#aniflow-player");
 
-playerIframe.contentWindow.postMessage({ command: "play" }, "*");
-playerIframe.contentWindow.postMessage({ command: "pause" }, "*");
-
-// Seek to a position, in seconds
-playerIframe.contentWindow.postMessage({ command: "seek", time: 120 }, "*");
-
-// Request a snapshot of the current playback state
-playerIframe.contentWindow.postMessage({ command: "getStatus" }, "*");
+player.contentWindow?.postMessage({
+  source: "aniembed",
+  version: 1,
+  type: "command",
+  name: "seek",
+  data: { time: 120 },
+}, "*");
 ```
+
+Supported commands: `play`, `pause`, `seek` (`{ time }`), `setVolume` (`{ volume }`), `setMuted` (`{ muted }`), `setPlaybackRate` (`{ rate }`), `setProvider` (`{ language, providerId }`), `getState` / `getStatus`.
 
 ---
 
 ## Project Structure
 
-```
+```text
 aniflow-api/
 ├── app/
 │   ├── api/
 │   │   ├── anime/
-│   │   │   ├── flow-skip-times/  # Re:ANIME OP/ED skip extraction
-│   │   │   └── skip-times/       # AniSkip integration with duration adjustment
-│   │   ├── m3u8/                 # Direct HLS stream aliases
-│   │   ├── play/                 # Stream resolver and ticket creation
-│   │   ├── progress/             # Playback progress tracking
-│   │   └── proxy/                # HLS proxy (m3u8, segments, subtitles, keys)
+│   │   │   ├── flow-skip-times/     # Re:ANIME OP/ED timestamps
+│   │   │   ├── play/                # Anime Play API alias
+│   │   │   └── skip-times/          # AniSkip integration with duration scaling
+│   │   ├── download/                # Stream download routes (anime, movie, tv, ani, mal)
+│   │   ├── m3u8/                    # API M3U8 routes (ani, mal, root)
+│   │   ├── movie/play/              # Movie JSON/M3U8 Play API
+│   │   ├── play/                    # Core anime stream resolver & ticket API
+│   │   ├── progress/                # Playback progress endpoint
+│   │   ├── proxy/                   # HLS manifest, segment, TS, key, and subtitle proxies
+│   │   └── tv/play/                 # TV Show JSON/M3U8 Play API
 │   ├── embed/
-│   │   ├── ani/[anilistId]/      # AniList embed routes
-│   │   └── mal/[malId]/          # MyAnimeList embed routes
-│   ├── meu8/
-│   │   ├── ani/[anilistId]/      # AniList direct M3U8 routes
-│   │   └── mal/[malId]/          # MyAnimeList direct M3U8 routes
-│   ├── globals.css               # Global styles and theme
-│   ├── layout.tsx                # Root layout and site metadata
-│   └── page.tsx                  # Documentation page with demo player
+│   │   ├── ani/[anilistId]/         # Legacy AniList embeds
+│   │   ├── anime/[...slug]/         # Unified Anime embed routes
+│   │   ├── mal/[malId]/             # Legacy MAL embeds
+│   │   ├── movie/[...slug]/         # Movie embed routes
+│   │   ├── tv/[...slug]/            # TV Show embed routes
+│   │   └── page.tsx                 # Ticket/query embed entry point
+│   ├── m3u8/                        # Direct M3U8 aliases (anime, movie, tv, ani, mal)
+│   ├── meu8/                        # Direct HLS playlists (anime, movie, tv, ani, mal)
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx                     # Documentation & live interactive playground
 ├── components/
-│   └── player/
-│       ├── embed-player.tsx      # Liquid glass HLS player
-│       ├── embed-page-client.tsx # Embed page wrapper
-│       ├── subtitle-settings-dialog.tsx # Subtitle styling panel
-│       └── player-core/          # Player state and subtitle helpers
+│   ├── player/
+│   │   ├── embed-page-client.tsx    # Client embed query/audio/server resolver
+│   │   ├── embed-player.tsx         # Liquid glass HLS player & audio/server switcher
+│   │   ├── subtitle-settings-dialog.tsx
+│   │   └── player-core/             # AV sync guard & scoped subtitle helpers
+│   └── ui/dialog.tsx
 ├── lib/
-│   ├── aniembed-extractor.ts     # Yuri and Zuri extraction
-│   ├── aniskip.ts                # AniSkip client
-│   ├── buzz.ts                   # Buzz (MegaPlay) extraction and proxying
-│   ├── reanime.ts                # Flow and Kitty extraction
-│   ├── skip-times-adapter.ts     # Skip-time scaling and fallback logic
-│   ├── vidly.ts                  # Katana (Vidly) multi-audio resolver & scraper
-│   └── utils.ts                  # Shared helpers
+│   ├── aniembed-extractor.ts        # Yuri and Zuri extraction
+│   ├── anime-extract/               # Additional extractors & decryptors
+│   ├── anime-resolver.ts            # Unified anime resolution helpers
+│   ├── aniskip.ts                   # AniSkip API client
+│   ├── buzz.ts                      # Buzz extraction and proxy helpers
+│   ├── episode-download.ts          # Direct stream remux/download helper
+│   ├── media-service.ts             # Movie & TV playback and download orchestration
+│   ├── reanime.ts                   # Flow and Kitty extraction
+│   ├── route-utils.ts               # Slug parsing & audio normalization
+│   ├── skip-times-adapter.ts        # Duration scaling for skip timestamps
+│   ├── stream-proxy/media-buffer.ts # MPEG-TS / fMP4 / PNG-header inspection
+│   ├── tmdb.ts                      # TMDB Movie & TV metadata client
+│   └── vidly.ts                     # Vidly (Katana, Edge, Prism, Flux, Nimbus, Comet, Citadel) & language detection
 ├── shared/
-│   └── validators.ts             # Input validation and schemas
-├── public/                       # Static assets and logos
-└── tailwind.config.ts            # Design tokens
+│   └── validators.ts                # Public URL & SSRF validation
+└── public/                          # Static assets & logos
 ```
 
 ---
@@ -372,7 +429,7 @@ aniflow-api/
 ### Requirements
 
 - [Node.js](https://nodejs.org/) 18.17.0 or newer
-- `npm`, `yarn` or `pnpm`
+- `npm`, `yarn`, or `pnpm`
 
 ### Installation
 
@@ -420,9 +477,9 @@ docker run -p 3000:3000 aniflow-api
 
 ## Legal Notice
 
-AniFlow is an open-source stream aggregator and playback client intended for educational and integration purposes. It does not host, store or upload any video files or copyrighted media. All streams and metadata are resolved at request time from third-party sources that are publicly reachable.
+AniFlow is an open-source stream aggregator and playback client intended for educational and integration purposes. It does not host, store, or upload any video files or copyrighted media. All streams and metadata are resolved at request time from publicly reachable third-party sources.
 
-Copyright claims and DMCA requests should be sent to the relevant upstream hosts.
+Copyright claims and DMCA requests should be directed to the relevant upstream hosts.
 
 ---
 

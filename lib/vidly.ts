@@ -13,6 +13,7 @@ export interface NormalizedLanguage {
   name: string;
   countryCode: string;
   flag: string;
+  known: boolean;
 }
 
 export interface VidlyAudioTrack {
@@ -53,9 +54,28 @@ export interface VidlyKatanaSource {
   hasDub?: boolean;
   intro?: { start: number; end: number } | null;
   outro?: { start: number; end: number } | null;
+  language?: string;
+}
+
+export interface VidlyMediaMeta {
+  kind: "movie" | "tv";
+  tmdbId: number;
+  season?: number;
+  episode?: number;
+  title: string;
+  subtitle?: string;
+  year?: string;
+  poster?: string | null;
+  backdrop?: string | null;
+  overview?: string;
+  logo?: string;
+  rating?: number;
+  runtime?: number;
+  certification?: string;
 }
 
 const vidlyCache = new Map<string, { data: VidlyKatanaSource[]; timestamp: number }>();
+const vidlyMediaCache = new Map<string, { sources: VidlyKatanaSource[]; meta: VidlyMediaMeta | null; timestamp: number }>();
 const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
 export function unsealVidlyPayload(payload: string): any {
@@ -104,7 +124,7 @@ export function unsealVidlyPayload(payload: string): any {
   return JSON.parse(new TextDecoder().decode(n));
 }
 
-export function normalizeLanguage(lang?: string, label?: string): NormalizedLanguage {
+function detectKnownLanguage(lang?: string, label?: string): Omit<NormalizedLanguage, "known"> | null {
   const l = (lang || "").toLowerCase().trim();
   const raw = `${lang || ""} ${label || ""}`.toLowerCase().trim();
 
@@ -439,9 +459,115 @@ export function normalizeLanguage(lang?: string, label?: string): NormalizedLang
     return { code: "uk", name: "Ukrainian", countryCode: "ua", flag: "🇺🇦" };
   }
 
+  // 34. Bulgarian
+  if (l === "bg" || l === "bul" || l.startsWith("bg-") || /\b(bulgarian|български)\b/i.test(raw)) {
+    return { code: "bg", name: "Bulgarian", countryCode: "bg", flag: "🇧🇬" };
+  }
+
+  // 35. Croatian
+  if (l === "hr" || l === "hrv" || l.startsWith("hr-") || /\b(croatian|hrvatski)\b/i.test(raw)) {
+    return { code: "hr", name: "Croatian", countryCode: "hr", flag: "🇭🇷" };
+  }
+
+  // 36. Serbian
+  if (l === "sr" || l === "srp" || l.startsWith("sr-") || /\b(serbian|srpski)\b/i.test(raw)) {
+    return { code: "sr", name: "Serbian", countryCode: "rs", flag: "🇷🇸" };
+  }
+
+  // 37. Slovak
+  if (l === "sk" || l === "slk" || l === "slo" || l.startsWith("sk-") || /\b(slovak|slovenčina)\b/i.test(raw)) {
+    return { code: "sk", name: "Slovak", countryCode: "sk", flag: "🇸🇰" };
+  }
+
+  // 38. Slovenian
+  if (l === "sl" || l === "slv" || l.startsWith("sl-") || /\b(slovenian|slovenščina)\b/i.test(raw)) {
+    return { code: "sl", name: "Slovenian", countryCode: "si", flag: "🇸🇮" };
+  }
+
+  // 39. Bengali
+  if (l === "bn" || l === "ben" || l.startsWith("bn-") || /\b(bengali|bangla)\b/i.test(raw)) {
+    return { code: "bn", name: "Bengali", countryCode: "bd", flag: "🇧🇩" };
+  }
+
+  // 40. Urdu
+  if (l === "ur" || l === "urd" || l.startsWith("ur-") || /\b(urdu)\b/i.test(raw)) {
+    return { code: "ur", name: "Urdu", countryCode: "pk", flag: "🇵🇰" };
+  }
+
+  // 41. Persian / Farsi
+  if (l === "fa" || l === "fas" || l === "per" || l.startsWith("fa-") || /\b(persian|farsi)\b/i.test(raw)) {
+    return { code: "fa", name: "Persian", countryCode: "ir", flag: "🇮🇷" };
+  }
+
+  // 42. Malay
+  if (l === "ms" || l === "msa" || l === "may" || l.startsWith("ms-") || /\b(malay|melayu)\b/i.test(raw)) {
+    return { code: "ms", name: "Malay", countryCode: "my", flag: "🇲🇾" };
+  }
+
+  // 43. Catalan
+  if (l === "ca" || l === "cat" || l.startsWith("ca-") || /\b(catalan|català)\b/i.test(raw)) {
+    return { code: "ca", name: "Catalan", countryCode: "es", flag: "🇪🇸" };
+  }
+
+  // 44. Lithuanian
+  if (l === "lt" || l === "lit" || l.startsWith("lt-") || /\b(lithuanian|lietuvių)\b/i.test(raw)) {
+    return { code: "lt", name: "Lithuanian", countryCode: "lt", flag: "🇱🇹" };
+  }
+
+  // 45. Latvian
+  if (l === "lv" || l === "lav" || l.startsWith("lv-") || /\b(latvian|latviešu)\b/i.test(raw)) {
+    return { code: "lv", name: "Latvian", countryCode: "lv", flag: "🇱🇻" };
+  }
+
+  // 46. Estonian
+  if (l === "et" || l === "est" || l.startsWith("et-") || /\b(estonian|eesti)\b/i.test(raw)) {
+    return { code: "et", name: "Estonian", countryCode: "ee", flag: "🇪🇪" };
+  }
+
+  // 47. Anime Dub / Sub aliases when explicit language wasn't matched
+  if (l === "dub" || /\benglish\s+dub\b/i.test(raw)) {
+    return { code: "en", name: "English", countryCode: "gb", flag: "🇬🇧" };
+  }
+  if (l === "sub") {
+    return { code: "ja", name: "Japanese", countryCode: "jp", flag: "🇯🇵" };
+  }
+
+  return null;
+}
+
+export function normalizeLanguage(lang?: string, label?: string): NormalizedLanguage {
+  const matched = detectKnownLanguage(lang, label);
+  if (matched) {
+    return { ...matched, known: true };
+  }
+
+  const l = (lang || "").toLowerCase().trim();
   const cleanCode = (l || label || "other").replace(/[^a-z0-9]/gi, "").substring(0, 4).toLowerCase();
   const cleanName = label || lang || "Other";
-  return { code: cleanCode || "other", name: cleanName, countryCode: cleanCode || "un", flag: "🌐" };
+  return { code: cleanCode || "other", name: cleanName, countryCode: "un", flag: "🌐", known: false };
+}
+
+export function cleanAudioParam(raw?: string | null): { code: string; name: string } {
+  if (!raw) return { code: "en", name: "English" };
+  let str = String(raw).trim();
+  try {
+    str = decodeURIComponent(str).trim();
+  } catch {}
+  str = str.replace(/^["']+|["']+$/g, "").trim();
+  if (str.toLowerCase().startsWith("audio=")) {
+    str = str.slice(6).trim();
+    str = str.replace(/^["']+|["']+$/g, "").trim();
+  }
+  if (!str) return { code: "en", name: "English" };
+  const lower = str.toLowerCase();
+  if (lower === "dub" || lower === "english" || lower === "en" || lower === "eng") {
+    return { code: "en", name: "English" };
+  }
+  if (lower === "sub" || lower === "japanese" || lower === "ja" || lower === "jp" || lower === "jpn") {
+    return { code: "ja", name: "Japanese" };
+  }
+  const norm = normalizeLanguage(str, str);
+  return { code: norm.code, name: norm.name };
 }
 
 export function deduplicateSubtitles(subtitles: any[]): VidlySubtitle[] {
@@ -490,6 +616,7 @@ export function parseAudioTracksFromM3u8(m3u8Content: string): VidlyAudioTrack[]
       const lang = langMatch ? langMatch[1] : name.toLowerCase();
       const isDefault = defaultMatch ? defaultMatch[1].toUpperCase() === "YES" : false;
       const norm = normalizeLanguage(lang, name);
+      if (!norm.known) continue;
 
       if (!seenCodes.has(norm.code)) {
         seenCodes.add(norm.code);
@@ -506,15 +633,40 @@ export function parseAudioTracksFromM3u8(m3u8Content: string): VidlyAudioTrack[]
     }
   }
 
-  // Ensure default audio representation if none found in manifest
-  if (tracks.length === 0) {
-    tracks.push(
-      { id: "ja", name: "Japanese", label: "Japanese", lang: "ja", countryCode: "jp", flag: "🇯🇵", default: true },
-      { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: false }
-    );
+  return tracks;
+}
+
+export function parseSubtitlesFromM3u8(m3u8Content: string, masterUrl: string): Array<{ url: string; language: string; label: string; default?: boolean }> {
+  const subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+  const lines = m3u8Content.split("\n");
+
+  for (const line of lines) {
+    if (line.startsWith("#EXT-X-MEDIA:") && line.includes("TYPE=SUBTITLES")) {
+      const nameMatch = line.match(/NAME="([^"]+)"/);
+      const langMatch = line.match(/LANGUAGE="([^"]+)"/);
+      const uriMatch = line.match(/URI="([^"]+)"/);
+      const defaultMatch = line.match(/DEFAULT=(YES|NO)/i);
+      if (!uriMatch || !uriMatch[1]) continue;
+
+      let absUri = uriMatch[1];
+      try {
+        absUri = new URL(uriMatch[1], masterUrl).href;
+      } catch {}
+
+      const name = nameMatch ? nameMatch[1] : langMatch ? langMatch[1] : "Subtitle";
+      const lang = langMatch ? langMatch[1] : name.toLowerCase();
+      const isDefault = defaultMatch ? defaultMatch[1].toUpperCase() === "YES" : false;
+
+      subs.push({
+        url: absUri,
+        language: lang,
+        label: name,
+        default: isDefault,
+      });
+    }
   }
 
-  return tracks;
+  return subs;
 }
 
 export async function fetchVidlyKatanaSource(
@@ -524,7 +676,15 @@ export async function fetchVidlyKatanaSource(
 ): Promise<VidlyKatanaSource | null> {
   const res = await getVidlyKatanaSources(anilistId, episode);
   if (audio === "dub") {
-    return res.sources.find((s) => s.type === "DUB") || res.sources.find((s) => s.hasDub) || res.sources[0] || null;
+    const dubMatch =
+      res.sources.find((s) => s.type === "DUB") ||
+      res.sources.find((s) => s.audioTracks?.some((a) => a.id === "en"));
+    if (!dubMatch) return null;
+    if (!dubMatch.videoUrl.includes("audio=dub") && !dubMatch.videoUrl.includes("audio=en")) {
+      const updatedUrl = dubMatch.videoUrl.replace(/([?&])audio=[^&]*/i, "$1audio=en");
+      return { ...dubMatch, videoUrl: updatedUrl, m3u8: updatedUrl };
+    }
+    return dubMatch;
   }
   return res.sources.find((s) => s.id === "katana-sub") || res.sources.find((s) => s.type === "SUB") || res.sources[0] || null;
 }
@@ -612,7 +772,7 @@ export async function getVidlyKatanaSources(
         const isMulti = prov === "katana-multi";
         const serverName = isMulti ? "Katana Multi" : isDub ? "Katana Dub" : "Katana Sub";
         const audioType: "sub" | "dub" = isDub ? "dub" : "sub";
-        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(directUrl)}&audio=${audioType}`;
+        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(directUrl)}&audio=${isDub ? "en" : "ja"}`;
 
         let audioTracks: VidlyAudioTrack[] = [];
         try {
@@ -628,11 +788,20 @@ export async function getVidlyKatanaSources(
           if (typeof m3u8Res.data === "string") {
             audioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
           }
+          if (audioTracks.length === 0) {
+            audioTracks = isDub
+              ? [{ id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true }]
+              : [{ id: "ja", name: "Japanese", label: "Japanese", lang: "ja", countryCode: "jp", flag: "🇯🇵", default: true }];
+          }
         } catch {
-          audioTracks = [
-            { id: "ja", name: "Japanese", label: "Japanese", lang: "ja", countryCode: "jp", flag: "🇯🇵", default: !isDub },
-            { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: isDub },
-          ];
+          audioTracks = isDub
+            ? [{ id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true }]
+            : isMulti
+            ? [
+                { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
+                { id: "ja", name: "Japanese", label: "Japanese", lang: "ja", countryCode: "jp", flag: "🇯🇵", default: false },
+              ]
+            : [{ id: "ja", name: "Japanese", label: "Japanese", lang: "ja", countryCode: "jp", flag: "🇯🇵", default: true }];
         }
 
         const dedupedSubs = deduplicateSubtitles(stream.subtitles || []);
@@ -667,5 +836,537 @@ export async function getVidlyKatanaSources(
   } catch (err: any) {
     console.warn(`[vidly] Failed to fetch Katana sources for anilist ${anilistId} ep ${episode}:`, err?.message || err);
     return { sources: [], hasDub: false };
+  }
+}
+
+export function extractVidlyMeta(
+  html: string,
+  kind: "movie" | "tv",
+  tmdbId: number,
+  season?: number,
+  episode?: number
+): VidlyMediaMeta {
+  let title = "";
+  let year = "";
+  let poster = "";
+  let backdrop = "";
+  let overview = "";
+  let subtitle = "";
+
+  const titleTagMatch = html.match(/<title>([^<]+)<\/title>/);
+  if (titleTagMatch) {
+    const raw = titleTagMatch[1].replace(/·\s*Vidly/i, "").trim();
+    const ym = raw.match(/^(.*?)(?:\s*\((19\d\d|20\d\d)\))?$/);
+    if (ym) {
+      title = ym[1].trim();
+      if (ym[2]) year = ym[2];
+    } else {
+      title = raw;
+    }
+  }
+
+  const mediaMetaMatch = html.match(/\\?"media\\?":\s*\{[^}]*},\s*\\?"meta\\?":\s*\{([^}]+)\}/);
+  if (mediaMetaMatch) {
+    const body = mediaMetaMatch[1];
+    const getField = (f: string) => {
+      const m = body.match(new RegExp(`\\\\?"${f}\\\\?":\\\\?"([^"\\\\]+)\\\\?"`));
+      return m ? m[1] : "";
+    };
+    if (getField("title")) title = getField("title");
+    if (getField("year")) year = getField("year");
+    if (getField("poster")) poster = getField("poster");
+    if (getField("backdrop")) backdrop = getField("backdrop");
+    if (getField("overview")) overview = getField("overview");
+    if (getField("subtitle")) subtitle = getField("subtitle");
+  }
+
+  if (!title) {
+    title = kind === "movie" ? `Movie ${tmdbId}` : `TV Show ${tmdbId}`;
+  }
+
+  return {
+    kind,
+    tmdbId,
+    season,
+    episode,
+    title,
+    subtitle: subtitle || (season && episode ? `S${season} · E${episode}` : undefined),
+    year: year || undefined,
+    poster: poster || null,
+    backdrop: backdrop || null,
+    overview: overview || undefined,
+  };
+}
+
+function finalizeVidlyMediaSources(
+  rawSources: VidlyKatanaSource[],
+  normPref: { code: string; name: string } | null,
+  primaryServerId: string
+): VidlyKatanaSource[] {
+  const bestFallbackSubs =
+    rawSources.find((s) => s.subtitles && s.subtitles.length > 0)?.subtitles || [];
+
+  const cloned = rawSources.map((s) => {
+    const hasPref = Boolean(normPref && s.audioTracks.some((t) => t.id === normPref.code));
+    const audioCode = hasPref
+      ? normPref!.code
+      : s.audioTracks.find((t) => t.default)?.id || s.audioTracks[0]?.id || "en";
+    const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(s.directUrl)}&audio=${encodeURIComponent(audioCode)}`;
+    const subs = s.subtitles && s.subtitles.length > 0 ? s.subtitles : bestFallbackSubs;
+    return {
+      ...s,
+      videoUrl: proxyM3u8,
+      m3u8: proxyM3u8,
+      subtitles: subs,
+    };
+  });
+
+  if (normPref) {
+    cloned.sort((a, b) => {
+      const aHas = a.audioTracks.some((t) => t.id === normPref.code);
+      const bHas = b.audioTracks.some((t) => t.id === normPref.code);
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+      if (a.id === primaryServerId && b.id !== primaryServerId) return -1;
+      if (b.id === primaryServerId && a.id !== primaryServerId) return 1;
+      return 0;
+    });
+  }
+
+  return cloned;
+}
+
+async function buildVidlyMediaStreamSource(
+  srv: { id: string; label: string; tag?: string },
+  st: any,
+  idx: number,
+  totalStreams: number,
+  unsealedSubtitles: any[],
+  normPref: { code: string; name: string } | null
+): Promise<VidlyKatanaSource | null> {
+  const directUrl = st?.url;
+  if (!directUrl) return null;
+
+  const parsedLang = st.language ? normalizeLanguage(st.language, st.label) : null;
+  const langObj = parsedLang && parsedLang.known ? parsedLang : null;
+
+  let m3u8AudioTracks: VidlyAudioTrack[] = [];
+  let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+  if (totalStreams === 1) {
+    try {
+      const m3u8Res = await vidlyAxios.get(directUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+          Referer: "https://vidly.pro/",
+        },
+        timeout: 3500,
+        responseType: "text",
+      });
+      if (typeof m3u8Res.data === "string" && m3u8Res.data.startsWith("#EXTM3U")) {
+        m3u8AudioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
+        m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+      }
+    } catch {}
+  }
+
+  const audioTracks: VidlyAudioTrack[] =
+    m3u8AudioTracks.length > 0
+      ? m3u8AudioTracks
+      : langObj
+      ? [
+          {
+            id: langObj.code,
+            name: langObj.name,
+            label: langObj.name,
+            lang: langObj.code,
+            countryCode: langObj.countryCode,
+            flag: langObj.flag,
+            default: true,
+          },
+        ]
+      : [{ id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true }];
+
+  const srvName = `${srv.label}${totalStreams > 1 ? ` #${idx + 1}` : ""}${langObj ? ` (${langObj.name})` : ""}`;
+  const srvId = `${srv.id}${totalStreams > 1 ? `-${idx + 1}` : ""}`;
+  const hasPref = Boolean(normPref && audioTracks.some((a) => a.id === normPref.code));
+  const targetAudioCode = hasPref ? normPref!.code : audioTracks[0]?.id || "en";
+  const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(directUrl)}&audio=${encodeURIComponent(targetAudioCode)}`;
+
+  const dedupedSubs = deduplicateSubtitles([
+    ...(st.subtitles || []),
+    ...(unsealedSubtitles || []),
+    ...m3u8Subs,
+  ]);
+
+  const primaryCode = audioTracks[0]?.id || "en";
+  return {
+    id: srvId,
+    server: srv.label,
+    name: srvName,
+    serverName: srvName,
+    type: primaryCode === "ja" ? "SUB" : "DUB",
+    audio: primaryCode === "ja" ? "sub" : "dub",
+    videoUrl: proxyM3u8,
+    m3u8: proxyM3u8,
+    directUrl,
+    quality: st.quality || "1080p",
+    isHls: true,
+    audioTracks,
+    subtitles: dedupedSubs,
+    hasDub: audioTracks.some((a) => a.id !== "ja"),
+    language: langObj?.name || audioTracks[0]?.name,
+  };
+}
+
+export async function getVidlyMovieSources(
+  tmdbId: number,
+  preferredAudio?: string
+): Promise<{ sources: VidlyKatanaSource[]; meta: VidlyMediaMeta | null }> {
+  const normPref = preferredAudio ? cleanAudioParam(preferredAudio) : null;
+  const cacheKey = `movie_${tmdbId}`;
+  const cached = vidlyMediaCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL && cached.sources.length > 0) {
+    return {
+      sources: finalizeVidlyMediaSources(cached.sources, normPref, "singularity"),
+      meta: cached.meta,
+    };
+  }
+  let meta: VidlyMediaMeta | null = null;
+
+  const targetUrl = `https://vidly.pro/movie/${tmdbId}`;
+  try {
+    const res = await vidlyAxios.get(targetUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        Referer: "https://vidly.pro/",
+      },
+    });
+
+    const html = res.data;
+    if (typeof html !== "string") {
+      return { sources: [], meta: null };
+    }
+
+    meta = extractVidlyMeta(html, "movie", tmdbId);
+
+    const tokenMatch = html.match(/\\"token\\":\\"([^"\\]+)\\"/) || html.match(/"token":"([^"]+)"/);
+    const token = tokenMatch ? tokenMatch[1] : "";
+
+    let initialData: any = null;
+    const v1Matches = [...html.matchAll(/v1\.[a-zA-Z0-9_-]+/g)];
+    for (const m of v1Matches) {
+      try {
+        const parsed = unsealVidlyPayload(m[0]);
+        if (parsed.streams && parsed.streams.length > 0 && !parsed.error) {
+          initialData = parsed;
+          break;
+        }
+      } catch {}
+    }
+
+    const serverList: Array<{ id: string; label: string; tag?: string }> = initialData?.servers || [
+      { id: "singularity", label: "Edge", tag: "HD" },
+      { id: "prism", label: "Prism", tag: "MULTI" },
+      { id: "flux", label: "Flux", tag: "HD" },
+      { id: "nimbus", label: "Nimbus", tag: "HD" },
+      { id: "comet", label: "Comet", tag: "HD" },
+      { id: "citadel", label: "Citadel", tag: "MULTI" },
+    ];
+
+    const sources: VidlyKatanaSource[] = [];
+
+    // 1. Process initial stream if available (usually Edge / singularity)
+    if (initialData?.streams?.[0]) {
+      const stream = initialData.streams[0];
+      const directUrl = stream.url;
+      const srvName = initialData.provider?.label || "Edge";
+      const srvId = initialData.provider?.id || "singularity";
+      const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(directUrl)}&audio=${encodeURIComponent(
+        normPref ? normPref.code : "en"
+      )}`;
+
+      let audioTracks: VidlyAudioTrack[] = [];
+      let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+      try {
+        const m3u8Res = await vidlyAxios.get(directUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Referer: "https://vidly.pro/",
+          },
+          timeout: 8000,
+          responseType: "text",
+        });
+        if (typeof m3u8Res.data === "string") {
+          audioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
+          m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+        }
+      } catch {}
+
+      if (audioTracks.length === 0) {
+        audioTracks = [
+          { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
+        ];
+      }
+
+      const dedupedSubs = deduplicateSubtitles([
+        ...(stream.subtitles || []),
+        ...(initialData.subtitles || []),
+        ...m3u8Subs,
+      ]);
+
+      sources.push({
+        id: srvId,
+        server: srvName,
+        name: srvName,
+        serverName: srvName,
+        type: "SUB",
+        audio: "sub",
+        videoUrl: proxyM3u8,
+        m3u8: proxyM3u8,
+        directUrl,
+        quality: stream.quality || "1080p",
+        isHls: true,
+        audioTracks,
+        subtitles: dedupedSubs,
+        hasDub: audioTracks.some((a) => a.id !== "ja"),
+      });
+    }
+
+    // 2. Query remaining providers in parallel
+    const queryPromises = serverList.map(async (srv) => {
+      if (srv.id === initialData?.provider?.id) return [];
+      if (!token) return [];
+
+      try {
+        const apiUrl = `https://vidly.pro/api/sources?kind=movie&provider=${srv.id}&t=${encodeURIComponent(
+          token
+        )}&tmdb=${tmdbId}`;
+        const apiRes = await vidlyAxios.get(apiUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Referer: targetUrl,
+          },
+          timeout: 9000,
+        });
+
+        if (typeof apiRes.data === "string" && apiRes.data.startsWith("v1.")) {
+          const unsealed = unsealVidlyPayload(apiRes.data);
+          if (unsealed.streams && Array.isArray(unsealed.streams) && unsealed.streams.length > 0) {
+            const built = await Promise.all(
+              unsealed.streams.map((st: any, idx: number) =>
+                buildVidlyMediaStreamSource(
+                  srv,
+                  st,
+                  idx,
+                  unsealed.streams.length,
+                  unsealed.subtitles || [],
+                  normPref
+                )
+              )
+            );
+            return built.filter((s): s is VidlyKatanaSource => s !== null);
+          }
+        }
+      } catch (err: any) {}
+      return [];
+    });
+
+    const otherSourcesNested = await Promise.all(queryPromises);
+    for (const nested of otherSourcesNested) {
+      sources.push(...nested);
+    }
+
+    if (sources.length > 0) {
+      vidlyMediaCache.set(cacheKey, { sources, meta, timestamp: Date.now() });
+    }
+
+    return {
+      sources: finalizeVidlyMediaSources(sources, normPref, "singularity"),
+      meta,
+    };
+  } catch (err: any) {
+    console.warn(`[vidly] Failed to fetch movie sources for tmdb ${tmdbId}:`, err?.message || err);
+    return { sources: [], meta };
+  }
+}
+
+export async function getVidlyTvSources(
+  tmdbId: number,
+  season: number,
+  episode: number,
+  preferredAudio?: string
+): Promise<{ sources: VidlyKatanaSource[]; meta: VidlyMediaMeta | null }> {
+  const normPref = preferredAudio ? cleanAudioParam(preferredAudio) : null;
+  const cacheKey = `tv_${tmdbId}_s${season}_e${episode}`;
+  const cached = vidlyMediaCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL && cached.sources.length > 0) {
+    return {
+      sources: finalizeVidlyMediaSources(cached.sources, normPref, "evion"),
+      meta: cached.meta,
+    };
+  }
+  let meta: VidlyMediaMeta | null = null;
+
+  const targetUrl = `https://vidly.pro/tv/${tmdbId}/${season}/${episode}`;
+  try {
+    const res = await vidlyAxios.get(targetUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        Referer: "https://vidly.pro/",
+      },
+    });
+
+    const html = res.data;
+    if (typeof html !== "string") {
+      return { sources: [], meta: null };
+    }
+
+    meta = extractVidlyMeta(html, "tv", tmdbId, season, episode);
+
+    const tokenMatch = html.match(/\\"token\\":\\"([^"\\]+)\\"/) || html.match(/"token":"([^"]+)"/);
+    const token = tokenMatch ? tokenMatch[1] : "";
+
+    let initialData: any = null;
+    const v1Matches = [...html.matchAll(/v1\.[a-zA-Z0-9_-]+/g)];
+    for (const m of v1Matches) {
+      try {
+        const parsed = unsealVidlyPayload(m[0]);
+        if (parsed.streams && parsed.streams.length > 0 && !parsed.error) {
+          initialData = parsed;
+          break;
+        }
+      } catch {}
+    }
+
+    const serverList: Array<{ id: string; label: string; tag?: string }> = initialData?.servers || [
+      { id: "evion", label: "Edge", tag: "HD" },
+      { id: "prism", label: "Prism", tag: "MULTI" },
+      { id: "flux", label: "Flux", tag: "HD" },
+      { id: "nimbus", label: "Nimbus", tag: "HD" },
+      { id: "comet", label: "Comet", tag: "HD" },
+      { id: "citadel", label: "Citadel", tag: "MULTI" },
+    ];
+
+    const sources: VidlyKatanaSource[] = [];
+
+    // 1. Process initial stream if available (usually Edge / evion)
+    if (initialData?.streams?.[0]) {
+      const stream = initialData.streams[0];
+      const directUrl = stream.url;
+      const srvName = initialData.provider?.label || "Edge";
+      const srvId = initialData.provider?.id || "evion";
+      const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(directUrl)}&audio=${encodeURIComponent(
+        normPref ? normPref.code : "en"
+      )}`;
+
+      let audioTracks: VidlyAudioTrack[] = [];
+      let m3u8Subs: Array<{ url: string; language: string; label: string; default?: boolean }> = [];
+      try {
+        const m3u8Res = await vidlyAxios.get(directUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Referer: "https://vidly.pro/",
+          },
+          timeout: 8000,
+          responseType: "text",
+        });
+        if (typeof m3u8Res.data === "string") {
+          audioTracks = parseAudioTracksFromM3u8(m3u8Res.data);
+          m3u8Subs = parseSubtitlesFromM3u8(m3u8Res.data, directUrl);
+        }
+      } catch {}
+
+      if (audioTracks.length === 0) {
+        audioTracks = [
+          { id: "en", name: "English", label: "English", lang: "en", countryCode: "gb", flag: "🇬🇧", default: true },
+        ];
+      }
+
+      const dedupedSubs = deduplicateSubtitles([
+        ...(stream.subtitles || []),
+        ...(initialData.subtitles || []),
+        ...m3u8Subs,
+      ]);
+
+      sources.push({
+        id: srvId,
+        server: srvName,
+        name: srvName,
+        serverName: srvName,
+        type: "SUB",
+        audio: "sub",
+        videoUrl: proxyM3u8,
+        m3u8: proxyM3u8,
+        directUrl,
+        quality: stream.quality || "1080p",
+        isHls: true,
+        audioTracks,
+        subtitles: dedupedSubs,
+        hasDub: audioTracks.some((a) => a.id !== "ja"),
+      });
+    }
+
+    // 2. Query remaining providers in parallel
+    const queryPromises = serverList.map(async (srv) => {
+      if (srv.id === initialData?.provider?.id) return [];
+      if (!token) return [];
+
+      try {
+        const apiUrl = `https://vidly.pro/api/sources?kind=tv&provider=${srv.id}&t=${encodeURIComponent(
+          token
+        )}&tmdb=${tmdbId}&s=${season}&e=${episode}`;
+        const apiRes = await vidlyAxios.get(apiUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            Referer: targetUrl,
+          },
+          timeout: 9000,
+        });
+
+        if (typeof apiRes.data === "string" && apiRes.data.startsWith("v1.")) {
+          const unsealed = unsealVidlyPayload(apiRes.data);
+          if (unsealed.streams && Array.isArray(unsealed.streams) && unsealed.streams.length > 0) {
+            const built = await Promise.all(
+              unsealed.streams.map((st: any, idx: number) =>
+                buildVidlyMediaStreamSource(
+                  srv,
+                  st,
+                  idx,
+                  unsealed.streams.length,
+                  unsealed.subtitles || [],
+                  normPref
+                )
+              )
+            );
+            return built.filter((s): s is VidlyKatanaSource => s !== null);
+          }
+        }
+      } catch (err: any) {}
+      return [];
+    });
+
+    const otherSourcesNested = await Promise.all(queryPromises);
+    for (const nested of otherSourcesNested) {
+      sources.push(...nested);
+    }
+
+    if (sources.length > 0) {
+      vidlyMediaCache.set(cacheKey, { sources, meta, timestamp: Date.now() });
+    }
+
+    return {
+      sources: finalizeVidlyMediaSources(sources, normPref, "evion"),
+      meta,
+    };
+  } catch (err: any) {
+    console.warn(`[vidly] Failed to fetch TV sources for tmdb ${tmdbId} s${season} e${episode}:`, err?.message || err);
+    return { sources: [], meta };
   }
 }

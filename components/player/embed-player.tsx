@@ -32,7 +32,7 @@ import {
   Upload,
 } from "lucide-react";
 import { formatSecondsToTime, cn } from "@/lib/utils";
-import { normalizeLanguage } from "@/lib/vidly";
+import { normalizeLanguage, cleanAudioParam } from "@/lib/vidly";
 import * as CountryFlags from "country-flag-icons/react/3x2";
 import { SubtitleSettingsDialog, SubtitleStyles } from "./subtitle-settings-dialog";
 import { attachAvSyncGuard } from "./player-core/av-sync-guard";
@@ -170,6 +170,45 @@ const COUNTRY_CODE_MAP: Record<string, string> = {
   rum: "RO",
   ukr: "UA",
   ua: "UA",
+  bg: "BG",
+  bul: "BG",
+  hr: "HR",
+  hrv: "HR",
+  sr: "RS",
+  srp: "RS",
+  rs: "RS",
+  sk: "SK",
+  slk: "SK",
+  slo: "SK",
+  sl: "SI",
+  slv: "SI",
+  si: "SI",
+  bn: "BD",
+  ben: "BD",
+  bd: "BD",
+  ur: "PK",
+  urd: "PK",
+  pk: "PK",
+  fa: "IR",
+  fas: "IR",
+  per: "IR",
+  ir: "IR",
+  ms: "MY",
+  msa: "MY",
+  may: "MY",
+  my: "MY",
+  ca: "ES",
+  cat: "ES",
+  lt: "LT",
+  lit: "LT",
+  lv: "LV",
+  lav: "LV",
+  et: "EE",
+  est: "EE",
+  ee: "EE",
+  ptpt: "PT",
+  la: "MX",
+  es419: "MX",
 };
 
 export function LanguageFlag({ countryCode, flag, name }: { countryCode?: string; flag?: string; name?: string }) {
@@ -251,11 +290,112 @@ export function isNativePlayerSource(s: VideoSourceData): boolean {
   );
 }
 
+export function isUnnamedHlsAudioTrack(t: { lang?: string; name?: string }): boolean {
+  const rawLang = (t.lang || "").trim();
+  const rawName = (t.name || "").trim();
+  return (
+    !rawLang &&
+    (!rawName || /^(main|default|audio(\s*\d+)?|track(\s*\d+)?|und|unknown)$/i.test(rawName))
+  );
+}
+
+export function isInvalidOrUnknownAudioTrack(t: { lang?: string; name?: string }): boolean {
+  if (isUnnamedHlsAudioTrack(t)) return true;
+  return !normalizeLanguage(t.lang || "", t.name || "").known;
+}
+
+export function resolveSourceProviderName(src: VideoSourceData): string {
+  const sId = (src.id || "").toLowerCase();
+  const sName = (src.serverName || "").toLowerCase();
+  const sServer = ((src as any).server || "").toLowerCase();
+  const sUrl = (src.videoUrl || "").toLowerCase();
+
+  // Vidly Movie & TV servers
+  if (sId.includes("singularity") || sId.includes("evion") || sServer === "edge" || sName === "edge") {
+    return "Edge";
+  }
+  if (sId.includes("prism") || sServer === "prism" || sName.includes("prism")) {
+    return (src as any).name || src.serverName || "Prism";
+  }
+  if (sId.includes("flux") || sServer === "flux" || sName.includes("flux")) {
+    return (src as any).name || src.serverName || "Flux";
+  }
+  if (sId.includes("nimbus") || sServer === "nimbus" || sName.includes("nimbus")) {
+    return (src as any).name || src.serverName || "Nimbus";
+  }
+  if (sId.includes("comet") || sServer === "comet" || sName.includes("comet")) {
+    return (src as any).name || src.serverName || "Comet";
+  }
+  if (sId.includes("citadel") || sServer === "citadel" || sName.includes("citadel")) {
+    return (src as any).name || src.serverName || "Citadel";
+  }
+
+  // 0. Katana from Vidly
+  if (sId.includes("katana") || sName.includes("katana") || sUrl.includes("katana")) {
+    return "Katana";
+  }
+
+  // 1. Buzz from Megaplay
+  if (
+    sId.includes("buzz") ||
+    sName.includes("buzz") ||
+    sUrl.includes("server=buzz") ||
+    sId.includes("megaplay") ||
+    sName.includes("megaplay") ||
+    sUrl.includes("megaplay")
+  ) {
+    return "Buzz";
+  }
+
+  // 2. Zuri from Extractor
+  if (
+    sId.includes("zuri") ||
+    sName.includes("zuri") ||
+    sUrl.includes("provider=zuri") ||
+    sId.includes("zuna") ||
+    sName.includes("zuna") ||
+    sUrl.includes("provider=zuna")
+  ) {
+    return "Zuri";
+  }
+
+  // 3. Yuri from Extractor
+  if (
+    sId.includes("yuri") ||
+    sName.includes("yuri") ||
+    sUrl.includes("provider=yuri") ||
+    sId.includes("yuki") ||
+    sName.includes("yuki") ||
+    sUrl.includes("provider=yuki")
+  ) {
+    return "Yuri";
+  }
+
+  // 4. Kitty (Flow 2 / HD-2)
+  if (
+    sId.includes("kitty") ||
+    sName.includes("kitty") ||
+    sUrl.includes("server=kitty") ||
+    sId.includes("flow-2") ||
+    sName.includes("flow 2") ||
+    sName.includes("hd-2") ||
+    sUrl.includes("server=hd-2")
+  ) {
+    return "Kitty";
+  }
+
+  // 5. Flow (default for all Re:ANIME / HD-1 / Flow streams)
+  return "Flow";
+}
+
 export interface EmbedPlayerProps {
+  mediaType?: "anime" | "movie" | "tv";
   anilistId?: number | null;
   malId?: number | null;
-  episodeNumber: number;
-  initialAudio?: "sub" | "dub";
+  tmdbId?: number | null;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  initialAudio?: string;
   initialServer?: string;
   startAt?: number;
   autoskipIntro?: boolean;
@@ -265,11 +405,14 @@ export interface EmbedPlayerProps {
 }
 
 export function EmbedPlayer({
+  mediaType = "anime",
   anilistId,
   malId,
-  episodeNumber,
-  initialAudio = "sub",
-  initialServer = "katana-sub",
+  tmdbId,
+  seasonNumber = 1,
+  episodeNumber = 1,
+  initialAudio = "english",
+  initialServer,
   startAt = 0,
   autoskipIntro = true,
   autoskipOutro = true,
@@ -301,14 +444,32 @@ export function EmbedPlayer({
   const [fatalError, setFatalError] = useState<string | null>(null);
 
   // Server & Audio options
-  const [selectedType, setSelectedType] = useState<"sub" | "dub">(initialAudio);
-  const [server, setServer] = useState<string>(initialServer.toLowerCase());
+  const isAnimeContent = useMemo(
+    () => mediaType !== "movie" && mediaType !== "tv" && !(Boolean(tmdbId) && !anilistId && !malId),
+    [mediaType, tmdbId, anilistId, malId]
+  );
+  const normInitAudio = cleanAudioParam(initialAudio);
+  const initType = isAnimeContent ? (normInitAudio.code === "ja" ? "sub" : "dub") : normInitAudio.code;
+  const defaultServer = initialServer
+    ? initialServer.toLowerCase()
+    : mediaType === "movie"
+    ? "singularity"
+    : mediaType === "tv"
+    ? "evion"
+    : initType === "dub"
+    ? "katana-dub"
+    : "katana-sub";
+  const [selectedType, setSelectedType] = useState<string>(initType);
+  const selectedTypeRef = useRef<string>(initType);
+  selectedTypeRef.current = selectedType;
+  const [server, setServer] = useState<string>(defaultServer);
+  const explicitServerRef = useRef<boolean>(Boolean(initialServer));
   const [sources, setSources] = useState<VideoSourceData[]>([]);
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [autoSkipState, setAutoSkipState] = useState<boolean>(autoskipIntro);
   const [autoSkipOutroState, setAutoSkipOutroState] = useState<boolean>(autoskipOutro);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [animeTitle, setAnimeTitle] = useState<string>(initialTitle || "Anime");
+  const [animeTitle, setAnimeTitle] = useState<string>(initialTitle || (mediaType === "movie" ? "Movie" : mediaType === "tv" ? "TV Show" : "Anime"));
   const [reloadCounter, setReloadCounter] = useState<number>(0);
 
   // HLS & Qualities
@@ -317,7 +478,11 @@ export function EmbedPlayer({
 
   // Audio Tracks (Katana Sub / Katana Dub / HLS)
   const [audioTracks, setAudioTracks] = useState<{ id: string; name: string; label: string; lang: string; countryCode?: string; flag?: string }[]>([]);
-  const [activeAudioTrack, setActiveAudioTrack] = useState<string>(initialAudio === "dub" ? "en" : "ja");
+  const [activeAudioTrack, setActiveAudioTrack] = useState<string>(normInitAudio.code);
+  const pendingAudioRef = useRef<string | null>(normInitAudio.code);
+  const skipNextLoadStreamRef = useRef<boolean>(false);
+  const lastEpisodeKeyRef = useRef<string>("");
+  const prevMediaKeyRef = useRef<string>("");
 
   // Subtitles
   const [allAvailableSubtitles, setAllAvailableSubtitles] = useState<SubtitleTrack[]>([]);
@@ -543,6 +708,7 @@ export function EmbedPlayer({
   useEffect(() => {
     let cancelled = false;
     async function loadSkipTimes() {
+      if (mediaType !== "anime" && !anilistId && !malId) return;
       try {
         const idParam = anilistId ? `anilistId=${anilistId}` : `malId=${malId}`;
         const titleParam = animeTitle ? `&title=${encodeURIComponent(animeTitle)}` : "";
@@ -626,24 +792,59 @@ export function EmbedPlayer({
 
   // Fetch Stream from /api/play
   useEffect(() => {
+    const mediaKey = `${mediaType}:${anilistId || ""}:${malId || ""}:${tmdbId || ""}:${seasonNumber}:${episodeNumber}`;
+    const epKey = `${mediaKey}:${reloadCounter}`;
+    if (prevMediaKeyRef.current !== "" && prevMediaKeyRef.current !== mediaKey) {
+      pendingAudioRef.current = cleanAudioParam(initialAudio).code;
+      explicitServerRef.current = Boolean(initialServer);
+    }
+    prevMediaKeyRef.current = mediaKey;
+
+    if (skipNextLoadStreamRef.current && lastEpisodeKeyRef.current === epKey) {
+      skipNextLoadStreamRef.current = false;
+      return;
+    }
+    skipNextLoadStreamRef.current = false;
+    lastEpisodeKeyRef.current = epKey;
+
     let cancelled = false;
     async function loadStream() {
       setIsLoading(true);
       setFatalError(null);
       try {
-        const params = new URLSearchParams();
-        if (anilistId) params.set("anilistId", anilistId.toString());
-        if (malId) params.set("malId", malId.toString());
-        params.set("episode", episodeNumber.toString());
-        params.set("audio", selectedType);
-        params.set("server", server);
+        let fetchUrl = "";
+        const isMovie = mediaType === "movie" || (!mediaType && Boolean(tmdbId) && !seasonNumber && !episodeNumber && !anilistId && !malId);
+        const isTv = mediaType === "tv" || (!mediaType && Boolean(tmdbId) && (Boolean(seasonNumber) || Boolean(episodeNumber)) && !anilistId && !malId);
+        const desiredAudioCode = pendingAudioRef.current || cleanAudioParam(selectedType).code;
 
-        const res = await fetch(`/api/play?${params.toString()}`);
+        if (isMovie) {
+          const srvQuery = explicitServerRef.current ? `&server=${encodeURIComponent(server)}` : "";
+          fetchUrl = `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}${srvQuery}`;
+        } else if (isTv) {
+          const srvQuery = explicitServerRef.current ? `&server=${encodeURIComponent(server)}` : "";
+          fetchUrl = `/api/tv/play?tmdb_id=${tmdbId}&season=${seasonNumber || 1}&episode=${episodeNumber || 1}&audio=${encodeURIComponent(desiredAudioCode)}${srvQuery}`;
+        } else {
+          const params = new URLSearchParams();
+          if (anilistId) params.set("anilistId", anilistId.toString());
+          if (malId) params.set("malId", malId.toString());
+          params.set("episode", (episodeNumber || 1).toString());
+          const animeApiAudio =
+            desiredAudioCode !== "en" && desiredAudioCode !== "ja" ? desiredAudioCode : selectedType;
+          params.set("audio", animeApiAudio);
+          params.set("server", server);
+          fetchUrl = `/api/play?${params.toString()}`;
+        }
+
+        const res = await fetch(fetchUrl);
         if (!res.ok) {
           throw new Error(`Failed to load stream (status: ${res.status})`);
         }
         const data = await res.json();
         if (cancelled) return;
+
+        if (data.title) {
+          setAnimeTitle(data.title);
+        }
 
         const initialStream = data.streamUrl || data.m3u8 || data.url || data.fullM3u8;
 
@@ -653,18 +854,6 @@ export function EmbedPlayer({
           ? data.allServers
           : [];
 
-        // Build standard providers roster
-        const idParams = `${anilistId ? `anilistId=${anilistId}&` : ""}${malId ? `malId=${malId}&` : ""}episode=${episodeNumber}`;
-        const standardFallbackProviders: VideoSourceData[] = [
-          { id: "katana-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=katana-sub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Sub)" },
-          { id: "katana-dub", type: "DUB", language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=katana-dub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Dub)" },
-          { id: "flow-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow (Sub)" },
-          { id: "kitty-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kitty&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kitty (Sub)" },
-          { id: "animex-yuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (Sub)" },
-          { id: "animex-zuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=zuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Zuri (Sub)" },
-          { id: "buzz-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=buzz&format=m3u8`, quality: "1080p", isHls: true, serverName: "Buzz (Sub)" },
-        ];
-
         // Clean & ensure proxying on external URLs
         const cleanedIncoming = incomingSources.map((s) => {
           let u = (s.videoUrl || "").trim();
@@ -673,6 +862,48 @@ export function EmbedPlayer({
           }
           return { ...s, videoUrl: u };
         });
+
+        const hasAuthenticDub =
+          cleanedIncoming.some((s) => s.type === "DUB" && !(s as any).audio_fallback) ||
+          data.hasDub === true;
+        const canShowKatanaDub = hasAuthenticDub || (cleanedIncoming.length === 0 && data.hasDub !== false);
+
+        // Build standard providers roster
+        let standardFallbackProviders: VideoSourceData[] = [];
+        if (isMovie) {
+          standardFallbackProviders = [
+            { id: "singularity", type: "SUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=singularity&format=m3u8`, quality: "1080p", isHls: true, serverName: "Edge" },
+            { id: "prism", type: "DUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=prism&format=m3u8`, quality: "1080p", isHls: true, serverName: "Prism" },
+            { id: "flux", type: "SUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=flux&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flux" },
+            { id: "nimbus", type: "SUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=nimbus&format=m3u8`, quality: "1080p", isHls: true, serverName: "Nimbus" },
+            { id: "comet", type: "SUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=comet&format=m3u8`, quality: "720p", isHls: true, serverName: "Comet" },
+            { id: "citadel", type: "DUB", language: "English", videoUrl: `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(desiredAudioCode)}&server=citadel&format=m3u8`, quality: "720p", isHls: true, serverName: "Citadel" },
+          ];
+        } else if (isTv) {
+          const sNum = seasonNumber || 1;
+          const eNum = episodeNumber || 1;
+          standardFallbackProviders = [
+            { id: "evion", type: "SUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=evion&format=m3u8`, quality: "1080p", isHls: true, serverName: "Edge" },
+            { id: "prism", type: "DUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=prism&format=m3u8`, quality: "1080p", isHls: true, serverName: "Prism" },
+            { id: "flux", type: "SUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=flux&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flux" },
+            { id: "nimbus", type: "SUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=nimbus&format=m3u8`, quality: "1080p", isHls: true, serverName: "Nimbus" },
+            { id: "comet", type: "SUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=comet&format=m3u8`, quality: "720p", isHls: true, serverName: "Comet" },
+            { id: "citadel", type: "DUB", language: "English", videoUrl: `/api/tv/play?tmdb_id=${tmdbId}&season=${sNum}&episode=${eNum}&audio=${encodeURIComponent(desiredAudioCode)}&server=citadel&format=m3u8`, quality: "720p", isHls: true, serverName: "Citadel" },
+          ];
+        } else {
+          const idParams = `${anilistId ? `anilistId=${anilistId}&` : ""}${malId ? `malId=${malId}&` : ""}episode=${episodeNumber || 1}`;
+          standardFallbackProviders = [
+            { id: "katana-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=katana-sub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Sub)" },
+            ...(canShowKatanaDub
+              ? [{ id: "katana-dub", type: "DUB" as const, language: "English", videoUrl: `/api/play?${idParams}&audio=dub&server=katana-dub&format=m3u8`, quality: "1080p", isHls: true, serverName: "Katana (Dub)" }]
+              : []),
+            { id: "flow-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=flow&format=m3u8`, quality: "1080p", isHls: true, serverName: "Flow (Sub)" },
+            { id: "kitty-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=kitty&format=m3u8`, quality: "1080p", isHls: true, serverName: "Kitty (Sub)" },
+            { id: "animex-yuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=yuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Yuri (Sub)" },
+            { id: "animex-zuri-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=zuri&format=m3u8`, quality: "1080p", isHls: true, serverName: "Zuri (Sub)" },
+            { id: "buzz-sub", type: "SUB", language: "Japanese", videoUrl: `/api/play?${idParams}&audio=sub&server=buzz&format=m3u8`, quality: "1080p", isHls: true, serverName: "Buzz (Sub)" },
+          ];
+        }
 
         // Find if ANY Reanime source in incoming has chapters/skip times
         const reanimeCandidate = cleanedIncoming.find(
@@ -716,22 +947,30 @@ export function EmbedPlayer({
 
         // Merge discovered streams with standard fallback routes
         const allAvailableSources: VideoSourceData[] = [...enrichedIncoming];
-        for (const fp of standardFallbackProviders) {
-          if (!allAvailableSources.some((s) => s.id === fp.id)) {
-            const isRe = fp.id.includes("flow") || fp.id.includes("kitty");
-            allAvailableSources.push(
-              isRe
-                ? { ...fp, intro: apiIntro, outro: apiOutro, chapters: apiChapters, refDuration: apiRefDuration }
-                : fp
-            );
+        if ((!isMovie && !isTv) || allAvailableSources.length === 0) {
+          for (const fp of standardFallbackProviders) {
+            if (!allAvailableSources.some((s) => s.id === fp.id)) {
+              const isRe = fp.id.includes("flow") || fp.id.includes("kitty");
+              allAvailableSources.push(
+                isRe
+                  ? { ...fp, intro: apiIntro, outro: apiOutro, chapters: apiChapters, refDuration: apiRefDuration }
+                  : fp
+              );
+            }
           }
         }
         setSources(allAvailableSources);
 
-        // Detect if Dub is genuinely available on this anime
-        const hasAuthenticDub = cleanedIncoming.some((s) => s.type === "DUB" && !(s as any).audio_fallback);
-        if (selectedType === "dub" && (!hasAuthenticDub || data.hasDub === false || data.audio_fallback)) {
+        const anySourceHasDub = allAvailableSources.some((s) => s.type === "DUB" && !(s as any).audio_fallback);
+        const wantsDubInit = !isMovie && !isTv && (selectedType === "dub" || desiredAudioCode === "en");
+        let didFallbackToSub = false;
+
+        if (wantsDubInit && (!anySourceHasDub || data.hasDub === false)) {
+          didFallbackToSub = true;
+          skipNextLoadStreamRef.current = true;
           setSelectedType("sub");
+          setActiveAudioTrack("ja");
+          pendingAudioRef.current = "ja";
           showToast("info", "No English Dub available for this episode. Switched to Sub.");
         }
 
@@ -739,27 +978,134 @@ export function EmbedPlayer({
           throw new Error(data.error || "No playable stream returned from server.");
         }
 
-        const isDub = selectedType === "dub" && hasAuthenticDub && data.hasDub !== false && !data.audio_fallback;
+        const isDub = wantsDubInit && !didFallbackToSub && anySourceHasDub;
         const typeMatch = (s: VideoSourceData) => (isDub ? s.type === "DUB" : s.type === "SUB");
         const sNorm = server.toLowerCase().replace(/[\s_]/g, "-");
         let selectedSource: VideoSourceData | undefined;
 
-        if (sNorm.includes("dub") || isDub) {
-          selectedSource = allAvailableSources.find((s) => s.type === "DUB") || allAvailableSources.find((s) => s.id?.includes("katana-dub"));
+        if (isMovie || isTv) {
+          selectedSource =
+            (!explicitServerRef.current && data.serverId
+              ? allAvailableSources.find((s) => s.id === data.serverId)
+              : undefined) ||
+            allAvailableSources.find(
+              (s) =>
+                s.id.toLowerCase() === server.toLowerCase() ||
+                (s as any).server?.toLowerCase().includes(server.toLowerCase()) ||
+                s.serverName?.toLowerCase().includes(server.toLowerCase())
+            ) ||
+            allAvailableSources[0];
         } else {
-          selectedSource = allAvailableSources.find((s) => s.type === "SUB") || allAvailableSources.find((s) => s.id?.includes("katana-sub"));
-        }
+          const reqBase = sNorm.replace(/-(sub|dub|multi)$/, "");
+          const reqProv =
+            reqBase === "hd-1" || reqBase === "flow-1" || reqBase === "flow1"
+              ? "flow"
+              : reqBase === "hd-2" || reqBase === "flow-2" || reqBase === "flow2"
+              ? "kitty"
+              : reqBase === "yuki"
+              ? "yuri"
+              : reqBase === "zuna"
+              ? "zuri"
+              : reqBase === "megaplay"
+              ? "buzz"
+              : reqBase;
 
-        if (!selectedSource && initialStream) {
-          selectedSource = allAvailableSources.find((s) => s.videoUrl === initialStream);
-        }
-        if (!selectedSource) {
-          selectedSource = allAvailableSources.find(typeMatch) || allAvailableSources[0];
+          const normalizePath = (u?: string | null) => {
+            if (!u) return "";
+            try {
+              const parsed = new URL(u, window.location.origin);
+              return parsed.pathname + parsed.search;
+            } catch {
+              return u;
+            }
+          };
+          const normInitialStream = normalizePath(initialStream);
+
+          if (desiredAudioCode !== "en" && desiredAudioCode !== "ja") {
+            selectedSource =
+              allAvailableSources.find(
+                (s) =>
+                  resolveSourceProviderName(s).toLowerCase() === reqProv &&
+                  Array.isArray((s as any).audioTracks) &&
+                  (s as any).audioTracks.some((at: any) => at.id === desiredAudioCode || at.lang === desiredAudioCode)
+              ) ||
+              allAvailableSources.find(
+                (s) =>
+                  Array.isArray((s as any).audioTracks) &&
+                  (s as any).audioTracks.some((at: any) => at.id === desiredAudioCode || at.lang === desiredAudioCode)
+              );
+          }
+
+          if (!selectedSource && normInitialStream && data.server && !didFallbackToSub && !(data.audio_fallback && isDub)) {
+            const apiProv = String(data.server).toLowerCase();
+            selectedSource = allAvailableSources.find(
+              (s) =>
+                typeMatch(s) &&
+                resolveSourceProviderName(s).toLowerCase() === apiProv &&
+                normalizePath(s.videoUrl) === normInitialStream
+            );
+          }
+
+          if (!selectedSource) {
+            selectedSource = allAvailableSources.find(
+              (s) =>
+                typeMatch(s) &&
+                (s.id.toLowerCase() === sNorm || resolveSourceProviderName(s).toLowerCase() === reqProv)
+            );
+          }
+
+          if (!selectedSource && normInitialStream && !didFallbackToSub && !(data.audio_fallback && isDub)) {
+            selectedSource = allAvailableSources.find(
+              (s) => typeMatch(s) && normalizePath(s.videoUrl) === normInitialStream
+            );
+          }
+
+          if (!selectedSource) {
+            selectedSource =
+              allAvailableSources.find((s) => typeMatch(s) && !s.videoUrl.includes("format=m3u8")) ||
+              allAvailableSources.find(typeMatch) ||
+              allAvailableSources[0];
+          }
         }
 
         if (selectedSource) {
           setActiveSourceId(selectedSource.id);
-          setStreamUrl(initialStream || selectedSource.videoUrl);
+          if (didFallbackToSub) {
+            const provLower = resolveSourceProviderName(selectedSource).toLowerCase();
+            const subSrvCode =
+              provLower === "katana" ? "katana-sub" : provLower === "buzz" ? "buzz-sub" : provLower;
+            skipNextLoadStreamRef.current = true;
+            setServer(subSrvCode);
+          } else if (isMovie || isTv) {
+            if (selectedSource.id && selectedSource.id !== server) {
+              skipNextLoadStreamRef.current = true;
+              setServer(selectedSource.id);
+            }
+          } else if (isAnimeContent && data.server && !data.audio_fallback) {
+            const actualProv = resolveSourceProviderName(selectedSource).toLowerCase();
+            const srvCode =
+              actualProv === "buzz"
+                ? selectedSource.type === "DUB"
+                  ? "buzz-dub"
+                  : "buzz-sub"
+                : actualProv === "katana"
+                ? selectedSource.type === "DUB"
+                  ? "katana-dub"
+                  : "katana-sub"
+                : selectedSource.type === "DUB"
+                ? `${actualProv}-dub`
+                : actualProv;
+            if (srvCode !== server) {
+              skipNextLoadStreamRef.current = true;
+              setServer(srvCode);
+            }
+          }
+
+          const shouldPreferSelectedUrl =
+            Boolean(data.audio_fallback && isDub && selectedSource.type === "DUB") ||
+            ((isMovie || isTv) && Boolean(selectedSource.videoUrl)) ||
+            !initialStream;
+          setStreamUrl(shouldPreferSelectedUrl ? selectedSource.videoUrl : initialStream);
         } else {
           setStreamUrl(initialStream);
         }
@@ -816,14 +1162,51 @@ export function EmbedPlayer({
           setActiveSubtitleTrack("");
         }
 
-        if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
-          setAudioTracks(data.audioTracks);
+        const rawSourceAudioTracks: any[] =
+          Array.isArray((selectedSource as any)?.audioTracks) && (selectedSource as any).audioTracks.length > 0
+            ? (selectedSource as any).audioTracks
+            : Array.isArray(data.audioTracks) && data.audioTracks.length > 0
+            ? data.audioTracks
+            : [];
+        const sourceAudioTracks = rawSourceAudioTracks.filter((t: any) => {
+          const norm = normalizeLanguage(t.lang || t.id || "", t.name || t.label || "");
+          return norm.known;
+        });
+        setAudioTracks(sourceAudioTracks);
+
+        const targetAudioCheck = didFallbackToSub ? "ja" : desiredAudioCode;
+        let resolvedActiveCode = targetAudioCheck;
+        if (sourceAudioTracks.length > 0) {
+          const matchedTrack = sourceAudioTracks.find(
+            (t: any) =>
+              t.id === targetAudioCheck ||
+              t.lang === targetAudioCheck ||
+              cleanAudioParam(t.lang || t.id || t.name).code === targetAudioCheck
+          );
+          if (matchedTrack) {
+            resolvedActiveCode = matchedTrack.id || matchedTrack.lang || targetAudioCheck;
+          } else {
+            const defTrack = sourceAudioTracks.find((t: any) => t.default) || sourceAudioTracks[0];
+            resolvedActiveCode =
+              defTrack?.id ||
+              defTrack?.lang ||
+              (isAnimeContent ? (selectedSource?.type === "DUB" ? "en" : "ja") : "en");
+          }
+        } else if (isAnimeContent) {
+          resolvedActiveCode = selectedSource?.type === "DUB" ? "en" : "ja";
+        } else if ((selectedSource as any)?.language) {
+          const srcLangNorm = normalizeLanguage((selectedSource as any).language, (selectedSource as any).language);
+          if (srcLangNorm.known) {
+            resolvedActiveCode = srcLangNorm.code;
+          }
         }
+        setActiveAudioTrack(resolvedActiveCode);
+        pendingAudioRef.current = resolvedActiveCode;
 
         postToParent("PLAYER_EVENT", {
           type: "ready",
           server,
-          audio: selectedType,
+          audio: didFallbackToSub ? "sub" : selectedType,
           episode: episodeNumber,
         });
       } catch (err: any) {
@@ -843,7 +1226,7 @@ export function EmbedPlayer({
     return () => {
       cancelled = true;
     };
-  }, [anilistId, malId, episodeNumber, selectedType, server, reloadCounter, postToParent]);
+  }, [mediaType, anilistId, malId, tmdbId, seasonNumber, episodeNumber, selectedType, server, reloadCounter, postToParent]);
 
   // HLS player setup & Native fallback
   useEffect(() => {
@@ -886,6 +1269,82 @@ export function EmbedPlayer({
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
+      const syncAudioTracksFromHls = (hlsInst: Hls) => {
+        if (!hlsInst.audioTracks || hlsInst.audioTracks.length === 0) return;
+        const rawTracks = hlsInst.audioTracks;
+        if (rawTracks.every((t) => isInvalidOrUnknownAudioTrack(t))) {
+          // Single muxed or unknown-labeled audio track (e.g. Flow, Kitty, Yuri, Zuri, Buzz, "8. Unknown"):
+          // keep activeAudioTrack derived from the active source rather than polluting the Audio menu.
+          return;
+        }
+
+        const fallbackLang = isAnimeContent
+          ? selectedTypeRef.current === "dub"
+            ? { code: "en", name: "English", countryCode: "gb", flag: "🇬🇧" }
+            : { code: "ja", name: "Japanese", countryCode: "jp", flag: "🇯🇵" }
+          : { code: "en", name: "English", countryCode: "gb", flag: "🇬🇧" };
+
+        const tracks = rawTracks
+          .map((t, idx) => {
+            if (isUnnamedHlsAudioTrack(t)) {
+              return {
+                hlsIndex: idx,
+                id: fallbackLang.code,
+                name: fallbackLang.name,
+                label: fallbackLang.name,
+                lang: fallbackLang.code,
+                countryCode: fallbackLang.countryCode,
+                flag: fallbackLang.flag,
+                isFallbackMain: true,
+                known: true,
+              };
+            }
+            const norm = normalizeLanguage(t.lang || "", t.name || "");
+            return {
+              hlsIndex: idx,
+              id: norm.code || String(idx),
+              name: norm.name || t.name || `Audio ${idx + 1}`,
+              label: norm.name || t.name || `Audio ${idx + 1}`,
+              lang: norm.code || t.lang || "und",
+              countryCode: norm.countryCode,
+              flag: norm.flag,
+              isFallbackMain: false,
+              known: norm.known,
+            };
+          })
+          .filter((tr, _, arr) => {
+            if (!tr.known) return false;
+            if (!tr.isFallbackMain) return true;
+            return !arr.some((other) => !other.isFallbackMain && other.known && other.id === tr.id);
+          });
+
+        if (tracks.length === 0) return;
+        setAudioTracks(tracks);
+
+        const desiredCode = pendingAudioRef.current;
+        if (desiredCode) {
+          const target = tracks.find((tr) => tr.lang === desiredCode || tr.id === desiredCode);
+          if (target) {
+            if (hlsInst.audioTrack !== target.hlsIndex) {
+              hlsInst.audioTrack = target.hlsIndex;
+            }
+            setActiveAudioTrack(target.id);
+            pendingAudioRef.current = null;
+            return;
+          }
+        }
+
+        const currentTrackIndex = hlsInst.audioTrack;
+        const active = tracks.find((tr) => tr.hlsIndex === currentTrackIndex) || tracks[0];
+        if (active) {
+          if (!tracks.some((tr) => tr.hlsIndex === currentTrackIndex) && hlsInst.audioTrack !== active.hlsIndex) {
+            hlsInst.audioTrack = active.hlsIndex;
+          }
+          setActiveAudioTrack(active.id);
+          pendingAudioRef.current = null;
+        }
+      };
+
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         setIsLoading(false);
         networkRetryCount = 0;
@@ -897,29 +1356,7 @@ export function EmbedPlayer({
         }));
         setHlsLevels(levels);
 
-        // Extract audio tracks from HLS
-        const updateAudioTracksFromHls = (hlsInst: Hls) => {
-          if (hlsInst.audioTracks && hlsInst.audioTracks.length > 0) {
-            const tracks = hlsInst.audioTracks.map((t, idx) => {
-              const norm = normalizeLanguage(t.lang || "", t.name || "");
-              return {
-                id: norm.code || String(idx),
-                name: norm.name || t.name || `Audio ${idx + 1}`,
-                label: norm.name || t.name || `Audio ${idx + 1}`,
-                lang: norm.code || t.lang || "und",
-                countryCode: norm.countryCode,
-                flag: norm.flag,
-              };
-            });
-            setAudioTracks(tracks);
-            const currentTrackIndex = hlsInst.audioTrack;
-            if (currentTrackIndex >= 0 && tracks[currentTrackIndex]) {
-              setActiveAudioTrack(tracks[currentTrackIndex].id);
-            }
-          }
-        };
-
-        updateAudioTracksFromHls(hls);
+        syncAudioTracksFromHls(hls);
 
         if (startPos > 0) {
           video.currentTime = startPos;
@@ -932,29 +1369,32 @@ export function EmbedPlayer({
 
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
         if (hlsRef.current) {
-          const hlsInst = hlsRef.current;
-          if (hlsInst.audioTracks && hlsInst.audioTracks.length > 0) {
-            const tracks = hlsInst.audioTracks.map((t, idx) => {
-              const norm = normalizeLanguage(t.lang || "", t.name || "");
-              return {
-                id: norm.code || String(idx),
-                name: norm.name || t.name || `Audio ${idx + 1}`,
-                label: norm.name || t.name || `Audio ${idx + 1}`,
-                lang: norm.code || t.lang || "und",
-                countryCode: norm.countryCode,
-                flag: norm.flag,
-              };
-            });
-            setAudioTracks(tracks);
-          }
+          syncAudioTracksFromHls(hlsRef.current);
         }
       });
 
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
         if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks[data.id]) {
           const t = hlsRef.current.audioTracks[data.id];
+          if (isInvalidOrUnknownAudioTrack(t)) {
+            if (
+              isUnnamedHlsAudioTrack(t) &&
+              hlsRef.current.audioTracks.length > 1 &&
+              !hlsRef.current.audioTracks.every((tr) => isInvalidOrUnknownAudioTrack(tr))
+            ) {
+              const fallbackCode = isAnimeContent
+                ? selectedTypeRef.current === "dub"
+                  ? "en"
+                  : "ja"
+                : "en";
+              setActiveAudioTrack(fallbackCode);
+            }
+            return;
+          }
           const norm = normalizeLanguage(t.lang || "", t.name || "");
-          setActiveAudioTrack(norm.code || String(data.id));
+          if (norm.known && norm.code) {
+            setActiveAudioTrack(norm.code);
+          }
         }
       });
 
@@ -1485,12 +1925,28 @@ export function EmbedPlayer({
   };
 
   const handleSelectAudioTrack = (track: { id: string; name: string; lang: string }) => {
-    // 1. Try to switch track inside active HLS instance
-    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > 0) {
+    const targetCode = cleanAudioParam(track.lang || track.id || track.name).code;
+
+    // 1. Try to switch track inside active HLS instance (ignoring synthetic/unknown tracks)
+    if (
+      hlsRef.current &&
+      hlsRef.current.audioTracks &&
+      hlsRef.current.audioTracks.length > 0 &&
+      !hlsRef.current.audioTracks.every((t) => isInvalidOrUnknownAudioTrack(t))
+    ) {
+      const fallbackCode = isAnimeContent
+        ? selectedTypeRef.current === "dub"
+          ? "en"
+          : "ja"
+        : "en";
       const matchIdx = hlsRef.current.audioTracks.findIndex((t) => {
+        if (isUnnamedHlsAudioTrack(t)) {
+          return fallbackCode === targetCode || fallbackCode === track.id;
+        }
         const norm = normalizeLanguage(t.lang || "", t.name || "");
+        if (!norm.known) return false;
         return (
-          norm.code === track.lang ||
+          norm.code === targetCode ||
           norm.code === track.id ||
           norm.name.toLowerCase() === track.name.toLowerCase()
         );
@@ -1498,38 +1954,122 @@ export function EmbedPlayer({
       if (matchIdx >= 0) {
         hlsRef.current.audioTrack = matchIdx;
         setActiveAudioTrack(track.id);
+        pendingAudioRef.current = null;
+        if (isAnimeContent && (targetCode === "en" || targetCode === "ja")) {
+          const nextType = targetCode === "en" ? "dub" : "sub";
+          if (nextType !== selectedType) {
+            skipNextLoadStreamRef.current = true;
+            setSelectedType(nextType);
+          }
+        }
         showToast("success", `Audio: ${track.name}`);
         return;
       }
     }
 
-    // 2. If not found in current HLS, switch to the server providing this audio
-    const isTargetDub =
-      track.id === "en" ||
-      track.name.toLowerCase().includes("english") ||
-      track.name.toLowerCase().includes("dub");
-    const targetSource =
-      sources.find((s) => {
-        if (Array.isArray((s as any).audioTracks)) {
-          return (s as any).audioTracks.some((at: any) => {
-            const norm = normalizeLanguage(at.lang || at.id, at.name || at.label);
-            return (
-              norm.code === track.lang ||
+    // 2. Not found in current HLS stream: find the best server providing this audio language
+    const sourceHasTrack = (s: VideoSourceData) => {
+      if (Array.isArray((s as any).audioTracks) && (s as any).audioTracks.length > 0) {
+        const matched = (s as any).audioTracks.some((at: any) => {
+          const norm = normalizeLanguage(at.lang || at.id || "", at.name || at.label || "");
+          return (
+            norm.known &&
+            (norm.code === targetCode ||
               norm.code === track.id ||
-              norm.name.toLowerCase() === track.name.toLowerCase()
-            );
-          });
-        }
-        return false;
-      }) ||
-      sources.find((s) => (isTargetDub ? s.type === "DUB" : s.type === "SUB"));
-    if (targetSource && targetSource.id !== currentSource?.id) {
-      handleSelectSource(targetSource);
-      setActiveAudioTrack(track.id);
-      showToast("refreshing", `Switching to ${targetSource.serverName || "Katana"} (${track.name})...`);
+              norm.name.toLowerCase() === track.name.toLowerCase())
+          );
+        });
+        if (matched) return true;
+      }
+      if (isAnimeContent) {
+        if (targetCode === "en") return s.type === "DUB" && !(s as any).audio_fallback;
+        if (targetCode === "ja") return s.type === "SUB";
+      }
+      if (s.language) {
+        const norm = normalizeLanguage(s.language, s.language);
+        return norm.known && (norm.code === targetCode || norm.code === track.id);
+      }
+      return false;
+    };
+
+    const SERVER_PRIORITY = [
+      "edge",
+      "prism",
+      "flux",
+      "nimbus",
+      "comet",
+      "citadel",
+      "katana",
+      "flow",
+      "kitty",
+      "yuri",
+      "zuri",
+      "buzz",
+    ];
+    const currentProv = currentSource ? resolveSourceProviderName(currentSource).toLowerCase() : "";
+    const matchingSources = sources
+      .filter(sourceHasTrack)
+      .sort((a, b) => {
+        const aNotCurrent = a.id !== currentSource?.id ? 0 : 1;
+        const bNotCurrent = b.id !== currentSource?.id ? 0 : 1;
+        if (aNotCurrent !== bNotCurrent) return aNotCurrent - bNotCurrent;
+        const aStub = a.videoUrl.includes("format=m3u8") ? 1 : 0;
+        const bStub = b.videoUrl.includes("format=m3u8") ? 1 : 0;
+        if (aStub !== bStub) return aStub - bStub;
+        const provA = resolveSourceProviderName(a).toLowerCase().split(" ")[0];
+        const provB = resolveSourceProviderName(b).toLowerCase().split(" ")[0];
+        const aSame = provA === currentProv ? 0 : 1;
+        const bSame = provB === currentProv ? 0 : 1;
+        if (aSame !== bSame) return aSame - bSame;
+        const idxA = SERVER_PRIORITY.indexOf(provA);
+        const idxB = SERVER_PRIORITY.indexOf(provB);
+        return (idxA >= 0 ? idxA : 99) - (idxB >= 0 ? idxB : 99);
+      });
+
+    let targetSource: VideoSourceData | undefined = matchingSources[0];
+
+    if (!targetSource && isAnimeContent) {
+      const isTargetDub = targetCode === "en" || track.name.toLowerCase().includes("english") || track.name.toLowerCase().includes("dub");
+      targetSource =
+        sources.find(
+          (s) =>
+            resolveSourceProviderName(s).toLowerCase() === currentProv &&
+            (isTargetDub ? s.type === "DUB" && !(s as any).audio_fallback : s.type === "SUB")
+        ) ||
+        sources.find((s) => (isTargetDub ? s.type === "DUB" && !(s as any).audio_fallback : s.type === "SUB"));
+    }
+
+    if (targetSource) {
+      let nextUrl = targetSource.videoUrl;
+      if (
+        nextUrl.includes("/api/proxy/m3u8") ||
+        nextUrl.includes("/api/play") ||
+        nextUrl.includes("/api/movie/play") ||
+        nextUrl.includes("/api/tv/play")
+      ) {
+        try {
+          const u = new URL(nextUrl, window.location.origin);
+          const urlAudioVal =
+            nextUrl.includes("/api/play") && (targetCode === "en" || targetCode === "ja")
+              ? targetCode === "en"
+                ? "dub"
+                : "sub"
+              : targetCode;
+          u.searchParams.set("audio", urlAudioVal);
+          nextUrl = u.pathname + u.search;
+        } catch {}
+      }
+
+      if (targetSource.id !== currentSource?.id || nextUrl !== currentSource?.videoUrl) {
+        handleSelectSource({ ...targetSource, videoUrl: nextUrl }, targetCode);
+        showToast("refreshing", `Switched to ${formatServerRouteName(targetSource)} (${track.name})...`);
+      } else {
+        setActiveAudioTrack(track.id);
+        pendingAudioRef.current = targetCode;
+        showToast("info", `Audio: ${track.name}`);
+      }
     } else {
-      setActiveAudioTrack(track.id);
-      showToast("info", `Audio: ${track.name}`);
+      showToast("info", `${track.name} is not available on another server`);
     }
   };
 
@@ -1877,14 +2417,15 @@ export function EmbedPlayer({
   const activeSubLabel =
     activeSubtitleTrack === null ? "Off" : currentSub?.label || (allAvailableSubtitles.length ? allAvailableSubtitles[0].label : "Off");
 
-  // Combined audio tracks gathered from current HLS stream, API payload, and server sources
+  // Combined audio tracks gathered from current HLS/API state and available server sources
   const combinedAudioTracks = useMemo(() => {
     const list: Array<{ id: string; name: string; label: string; lang: string; countryCode: string; flag: string }> = [];
     const seen = new Set<string>();
 
     const addTrack = (rawLang: string, rawName: string) => {
+      if (isUnnamedHlsAudioTrack({ lang: rawLang, name: rawName })) return;
       const norm = normalizeLanguage(rawLang, rawName);
-      if (!norm.code || seen.has(norm.code)) return;
+      if (!norm.known || !norm.code || seen.has(norm.code)) return;
       seen.add(norm.code);
       list.push({
         id: norm.code,
@@ -1896,53 +2437,58 @@ export function EmbedPlayer({
       });
     };
 
-    // 1. Current HLS audio tracks
-    if (hlsRef.current && hlsRef.current.audioTracks && hlsRef.current.audioTracks.length > 0) {
-      for (const t of hlsRef.current.audioTracks) {
-        addTrack(t.lang || "", t.name || "");
-      }
-    }
-
-    // 2. Audio tracks from API state
+    // 1. Audio tracks from active stream / HLS / API state
     for (const t of audioTracks) {
       addTrack(t.lang || t.id, t.name || t.label);
     }
 
-    // 3. Audio tracks from available sources
+    // 2. Audio tracks from available sources
     for (const s of sources) {
       if (Array.isArray((s as any).audioTracks)) {
         for (const at of (s as any).audioTracks) {
           addTrack(at.lang || at.id, at.name || at.label);
         }
       }
-      if (s.type === "SUB") addTrack("ja", "Japanese");
-      if (s.type === "DUB") addTrack("en", "English");
+      if (isAnimeContent) {
+        if (s.type === "SUB") addTrack("ja", "Japanese");
+        if (s.type === "DUB" && !(s as any).audio_fallback) addTrack("en", "English");
+      } else if (s.language) {
+        addTrack(s.language, s.language);
+      }
     }
 
     if (list.length === 0) {
-      addTrack("ja", "Japanese");
       addTrack("en", "English");
+      if (isAnimeContent) addTrack("ja", "Japanese");
     }
 
-    // Always sort so Japanese and English are at the top, then alphabetically
+    // Always sort so English and Japanese are at the top, then alphabetically
     return list.sort((a, b) => {
-      if (a.id === "ja") return -1;
-      if (b.id === "ja") return 1;
       if (a.id === "en") return -1;
       if (b.id === "en") return 1;
+      if (a.id === "ja") return -1;
+      if (b.id === "ja") return 1;
       return a.name.localeCompare(b.name);
     });
-  }, [audioTracks, sources]);
+  }, [audioTracks, sources, isAnimeContent]);
 
   const activeAudioLabel = useMemo(() => {
+    const normActive = cleanAudioParam(activeAudioTrack);
     const match = combinedAudioTracks.find(
       (t) =>
         t.id === activeAudioTrack ||
         t.lang === activeAudioTrack ||
-        t.name.toLowerCase() === activeAudioTrack.toLowerCase()
+        t.name.toLowerCase() === activeAudioTrack.toLowerCase() ||
+        t.id === normActive.code
     );
-    return match ? match.name : (selectedType === "dub" ? "English" : "Japanese");
-  }, [combinedAudioTracks, activeAudioTrack, selectedType]);
+    return match
+      ? match.name
+      : isAnimeContent
+      ? selectedType === "dub"
+        ? "English"
+        : "Japanese"
+      : normActive.name || "English";
+  }, [combinedAudioTracks, activeAudioTrack, selectedType, isAnimeContent]);
 
   const currentQualityLabel = (() => {
     if (selectedHlsLevel === -1) {
@@ -1968,77 +2514,41 @@ export function EmbedPlayer({
     ];
   }, [hlsLevels]);
 
-  const getSourceProvider = useCallback((src: VideoSourceData) => {
-    const sId = (src.id || "").toLowerCase();
-    const sName = (src.serverName || "").toLowerCase();
-    const sUrl = (src.videoUrl || "").toLowerCase();
-
-    // 0. Katana from Vidly
-    if (sId.includes("katana") || sName.includes("katana") || sUrl.includes("katana")) {
-      return "Katana";
-    }
-
-    // 1. Buzz from Megaplay
-    if (
-      sId.includes("buzz") ||
-      sName.includes("buzz") ||
-      sUrl.includes("server=buzz") ||
-      sId.includes("megaplay") ||
-      sName.includes("megaplay") ||
-      sUrl.includes("megaplay")
-    ) {
-      return "Buzz";
-    }
-
-    // 2. Zuri from Extractor
-    if (
-      sId.includes("zuri") ||
-      sName.includes("zuri") ||
-      sUrl.includes("provider=zuri") ||
-      sId.includes("zuna") ||
-      sName.includes("zuna") ||
-      sUrl.includes("provider=zuna")
-    ) {
-      return "Zuri";
-    }
-
-    // 3. Yuri from Extractor
-    if (
-      sId.includes("yuri") ||
-      sName.includes("yuri") ||
-      sUrl.includes("provider=yuri") ||
-      sId.includes("yuki") ||
-      sName.includes("yuki") ||
-      sUrl.includes("provider=yuki")
-    ) {
-      return "Yuri";
-    }
-
-    // 4. Kitty (Flow 2 / HD-2)
-    if (
-      sId.includes("kitty") ||
-      sName.includes("kitty") ||
-      sUrl.includes("server=kitty") ||
-      sId.includes("flow-2") ||
-      sName.includes("flow 2") ||
-      sName.includes("hd-2") ||
-      sUrl.includes("server=hd-2")
-    ) {
-      return "Kitty";
-    }
-
-    // 5. Flow (default for all Re:ANIME / HD-1 / Flow streams)
-    return "Flow";
-  }, []);
+  const getSourceProvider = useCallback(resolveSourceProviderName, []);
 
   const sortSourcesByProvider = useCallback((a: VideoSourceData, b: VideoSourceData) => {
-    const SERVER_SORT_ORDER = ["katana", "flow", "kitty", "yuri", "zuri", "buzz"];
-    const provA = getSourceProvider(a).toLowerCase();
-    const provB = getSourceProvider(b).toLowerCase();
+    const SERVER_SORT_ORDER = [
+      "edge",
+      "prism",
+      "flux",
+      "nimbus",
+      "comet",
+      "citadel",
+      "katana",
+      "flow",
+      "kitty",
+      "yuri",
+      "zuri",
+      "buzz",
+    ];
+    const provA = getSourceProvider(a).toLowerCase().split(" ")[0];
+    const provB = getSourceProvider(b).toLowerCase().split(" ")[0];
     const idxA = SERVER_SORT_ORDER.indexOf(provA);
     const idxB = SERVER_SORT_ORDER.indexOf(provB);
     return (idxA >= 0 ? idxA : 99) - (idxB >= 0 ? idxB : 99);
   }, [getSourceProvider]);
+
+  // All distinct Vidly servers for Movies & TV Shows (not split by Anime Sub/Dub)
+  const vidlyServers = useMemo<VideoSourceData[]>(() => {
+    const byId = new Map<string, VideoSourceData>();
+    for (const s of sources) {
+      const existing = byId.get(s.id);
+      if (!existing || (existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))) {
+        byId.set(s.id, s);
+      }
+    }
+    return Array.from(byId.values()).sort(sortSourcesByProvider);
+  }, [sources, sortSourcesByProvider]);
 
   // Native player sources segregated for SUB and DUB
   const nativeSubSources = useMemo<VideoSourceData[]>(() => {
@@ -2048,13 +2558,17 @@ export function EmbedPlayer({
     for (const s of list) {
       const prov = getSourceProvider(s).toLowerCase();
       const existing = byProv.get(prov);
-      // Prefer direct proxied stream URL over generic route URL
-      if (!existing || (existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))) {
+      if (
+        !existing ||
+        s.id === activeSourceId ||
+        (existing.id !== activeSourceId && existing.id === "katana-multi" && s.id === "katana-sub") ||
+        (existing.id !== activeSourceId && existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))
+      ) {
         byProv.set(prov, s);
       }
     }
     return Array.from(byProv.values()).sort(sortSourcesByProvider);
-  }, [sources, getSourceProvider, sortSourcesByProvider]);
+  }, [sources, activeSourceId, getSourceProvider, sortSourcesByProvider]);
 
   const nativeDubSources = useMemo<VideoSourceData[]>(() => {
     const isAuthenticDub = (s: VideoSourceData) => {
@@ -2067,20 +2581,23 @@ export function EmbedPlayer({
     for (const s of list) {
       const prov = getSourceProvider(s).toLowerCase();
       const existing = byProv.get(prov);
-      // Prefer direct proxied stream URL over generic route URL
-      if (!existing || (existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))) {
+      if (
+        !existing ||
+        s.id === activeSourceId ||
+        (existing.id !== activeSourceId && existing.videoUrl.includes("format=m3u8") && !s.videoUrl.includes("format=m3u8"))
+      ) {
         byProv.set(prov, s);
       }
     }
     return Array.from(byProv.values()).sort(sortSourcesByProvider);
-  }, [sources, getSourceProvider, sortSourcesByProvider]);
+  }, [sources, activeSourceId, getSourceProvider, sortSourcesByProvider]);
 
   const currentSource = useMemo(() => {
     if (activeSourceId) {
       const found = sources.find((s) => s.id === activeSourceId);
       if (found) return found;
     }
-    const forType = sources.filter((s) => s.type.toLowerCase() === selectedType.toLowerCase());
+    const forType = sources.filter((s) => (s.type || "").toLowerCase() === selectedType.toLowerCase());
     return forType[0] || sources[0] || null;
   }, [sources, activeSourceId, selectedType]);
 
@@ -2089,8 +2606,26 @@ export function EmbedPlayer({
   }, [getSourceProvider]);
 
   const formatServerRouteAudio = useCallback((src: VideoSourceData) => {
+    if (!isAnimeContent) {
+      const rawTracks = Array.isArray((src as any).audioTracks) ? (src as any).audioTracks : [];
+      const knownTracks = rawTracks.filter((t: any) =>
+        normalizeLanguage(t.lang || t.id || "", t.name || t.label || "").known
+      );
+      if (knownTracks.length > 1) return `${knownTracks.length} Audio`;
+      if (knownTracks.length === 1) {
+        return normalizeLanguage(
+          knownTracks[0].lang || knownTracks[0].id || "",
+          knownTracks[0].name || knownTracks[0].label || ""
+        ).name;
+      }
+      if (src.language) {
+        const norm = normalizeLanguage(src.language, src.language);
+        if (norm.known) return norm.name;
+      }
+      return src.quality || "HD";
+    }
     return src.type === "DUB" ? "English Dub" : "Sub";
-  }, []);
+  }, [isAnimeContent]);
 
   const formatServerRouteLabel = useCallback((src: VideoSourceData) => {
     const name = formatServerRouteName(src);
@@ -2102,10 +2637,13 @@ export function EmbedPlayer({
     if (currentSource) {
       return formatServerRouteLabel(currentSource);
     }
+    if (!isAnimeContent) {
+      return "Edge (1080p)";
+    }
     return selectedType === "dub" ? "Katana (English Dub)" : "Katana (Sub)";
-  }, [currentSource, formatServerRouteLabel, selectedType]);
+  }, [currentSource, formatServerRouteLabel, selectedType, isAnimeContent]);
 
-  const handleSelectSource = useCallback((src: VideoSourceData) => {
+  const handleSelectSource = useCallback((src: VideoSourceData, explicitAudioCode?: string) => {
     const curTime = videoRef.current && videoRef.current.currentTime > 0
       ? videoRef.current.currentTime
       : currentTime;
@@ -2113,63 +2651,102 @@ export function EmbedPlayer({
       preserveTimeRef.current = curTime;
     }
     isSwitchingServerRef.current = true;
+    explicitServerRef.current = true;
     setFatalError(null);
     setIsLoading(true);
 
-    const newType = src.type.toLowerCase() as "sub" | "dub";
-    if (newType !== selectedType) {
+    const newType = (src.type || "SUB").toLowerCase() as "sub" | "dub";
+    if (isAnimeContent && newType !== selectedType) {
+      skipNextLoadStreamRef.current = true;
       setSelectedType(newType);
     }
 
     const prov = getSourceProvider(src).toLowerCase();
-    const srvCode = prov === "buzz"
+    const srvCode = !isAnimeContent
+      ? src.id
+      : prov === "buzz"
       ? (src.type === "DUB" ? "buzz-dub" : "buzz-sub")
       : prov === "katana"
       ? (src.type === "DUB" ? "katana-dub" : "katana-sub")
       : (src.type === "DUB" ? `${prov}-dub` : prov);
-    setServer(srvCode);
+    if (srvCode !== server) {
+      skipNextLoadStreamRef.current = true;
+      setServer(srvCode);
+    }
 
-    // Apply skip times specifically for the newly selected server
-    const isFlowSrc = prov === "flow" || prov === "kitty";
-    if (src.intro || src.outro) {
-      setRawSkipTimes({
-        intro: src.intro || null,
-        outro: src.outro || null,
-        refDuration: src.refDuration || 1440,
-        source: isFlowSrc ? "flow-reanime" : "aniskip",
-      });
-      if (isFlowSrc && duration > 0) {
-        const adapted = adaptSkipTimes(src.intro || null, src.outro || null, src.refDuration || 1440, duration);
-        setSkipTimes({ intro: adapted.intro, outro: adapted.outro });
+    const rawSrcTracks: any[] = Array.isArray((src as any).audioTracks) ? (src as any).audioTracks : [];
+    const srcTracks = rawSrcTracks.filter((t) =>
+      normalizeLanguage(t.lang || t.id || "", t.name || t.label || "").known
+    );
+    let nextAudioCode = explicitAudioCode || "";
+    if (!nextAudioCode) {
+      if (isAnimeContent) {
+        nextAudioCode = newType === "dub" ? "en" : "ja";
+        if (srcTracks.length > 0 && !srcTracks.some((t) => (t.id || t.lang) === nextAudioCode)) {
+          const def = srcTracks.find((t) => t.default) || srcTracks[0];
+          nextAudioCode = def?.id || def?.lang || nextAudioCode;
+        }
       } else {
-        setSkipTimes({ intro: src.intro || null, outro: src.outro || null });
+        const curMatch = srcTracks.find((t) => (t.id || t.lang) === activeAudioTrack);
+        if (curMatch) {
+          nextAudioCode = curMatch.id || curMatch.lang;
+        } else if (srcTracks.length > 0) {
+          const def = srcTracks.find((t) => t.default) || srcTracks[0];
+          nextAudioCode = def?.id || def?.lang || activeAudioTrack || "en";
+        } else if ((src as any).language) {
+          const srcLangNorm = normalizeLanguage((src as any).language, (src as any).language);
+          nextAudioCode = srcLangNorm.known ? srcLangNorm.code : (activeAudioTrack || "en");
+        } else {
+          nextAudioCode = activeAudioTrack || "en";
+        }
       }
-    } else {
-      // Reload server-scoped skip times without inheriting Flow timestamps
-      const idParam = anilistId ? `anilistId=${anilistId}` : `malId=${malId}`;
-      const titleParam = animeTitle ? `&title=${encodeURIComponent(animeTitle)}` : "";
-      fetch(`/api/anime/skip-times?${idParam}&episode=${episodeNumber}${titleParam}&server=${srvCode}`)
-        .then((r) => r.json())
-        .then((d) => {
-          if (d.found && (d.intro || d.outro)) {
-            setRawSkipTimes({
-              intro: d.intro || null,
-              outro: d.outro || null,
-              refDuration: d.refDuration || 1440,
-              source: d.source || (isFlowSrc ? "flow-reanime" : "aniskip"),
-            });
-            if (isFlowSrc && duration > 0) {
-              const adapted = adaptSkipTimes(d.intro || null, d.outro || null, d.refDuration || 1440, duration);
-              setSkipTimes({ intro: adapted.intro, outro: adapted.outro });
+    }
+    pendingAudioRef.current = nextAudioCode;
+    setActiveAudioTrack(nextAudioCode);
+    setAudioTracks(srcTracks);
+
+    // Apply skip times specifically for the newly selected anime server
+    if (isAnimeContent) {
+      const isFlowSrc = prov === "flow" || prov === "kitty";
+      if (src.intro || src.outro) {
+        setRawSkipTimes({
+          intro: src.intro || null,
+          outro: src.outro || null,
+          refDuration: src.refDuration || 1440,
+          source: isFlowSrc ? "flow-reanime" : "aniskip",
+        });
+        if (isFlowSrc && duration > 0) {
+          const adapted = adaptSkipTimes(src.intro || null, src.outro || null, src.refDuration || 1440, duration);
+          setSkipTimes({ intro: adapted.intro, outro: adapted.outro });
+        } else {
+          setSkipTimes({ intro: src.intro || null, outro: src.outro || null });
+        }
+      } else {
+        const idParam = anilistId ? `anilistId=${anilistId}` : `malId=${malId}`;
+        const titleParam = animeTitle ? `&title=${encodeURIComponent(animeTitle)}` : "";
+        fetch(`/api/anime/skip-times?${idParam}&episode=${episodeNumber}${titleParam}&server=${srvCode}`)
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.found && (d.intro || d.outro)) {
+              setRawSkipTimes({
+                intro: d.intro || null,
+                outro: d.outro || null,
+                refDuration: d.refDuration || 1440,
+                source: d.source || (isFlowSrc ? "flow-reanime" : "aniskip"),
+              });
+              if (isFlowSrc && duration > 0) {
+                const adapted = adaptSkipTimes(d.intro || null, d.outro || null, d.refDuration || 1440, duration);
+                setSkipTimes({ intro: adapted.intro, outro: adapted.outro });
+              } else {
+                setSkipTimes({ intro: d.intro || null, outro: d.outro || null });
+              }
             } else {
-              setSkipTimes({ intro: d.intro || null, outro: d.outro || null });
+              setRawSkipTimes({ intro: null, outro: null, refDuration: 1440, source: isFlowSrc ? "flow-reanime" : "aniskip" });
+              setSkipTimes({ intro: null, outro: null });
             }
-          } else {
-            setRawSkipTimes({ intro: null, outro: null, refDuration: 1440, source: isFlowSrc ? "flow-reanime" : "aniskip" });
-            setSkipTimes({ intro: null, outro: null });
-          }
-        })
-        .catch(() => {});
+          })
+          .catch(() => {});
+      }
     }
 
     setActiveSourceId(src.id);
@@ -2206,9 +2783,15 @@ export function EmbedPlayer({
     }
 
     // Always fetch fresh subtitles asynchronously for the chosen server in case they weren't attached yet
-    const subIdParam = anilistId ? `anilistId=${anilistId}` : `malId=${malId}`;
-    const subEpParam = `episode=${episodeNumber}`;
-    fetch(`/api/play?${subIdParam}&${subEpParam}&audio=${newType}&server=${srvCode}`)
+    const subFetchUrl = !isAnimeContent
+      ? (mediaType === "movie" || (mediaType !== "tv" && !seasonNumber && !episodeNumber)
+          ? `/api/movie/play?tmdb_id=${tmdbId}&audio=${encodeURIComponent(nextAudioCode)}&server=${encodeURIComponent(srvCode)}`
+          : `/api/tv/play?tmdb_id=${tmdbId}&season=${seasonNumber || 1}&episode=${episodeNumber || 1}&audio=${encodeURIComponent(nextAudioCode)}&server=${encodeURIComponent(srvCode)}`)
+      : `/api/play?${anilistId ? `anilistId=${anilistId}` : `malId=${malId}`}&episode=${episodeNumber}&audio=${
+          nextAudioCode !== "en" && nextAudioCode !== "ja" ? encodeURIComponent(nextAudioCode) : newType
+        }&server=${srvCode}`;
+
+    fetch(subFetchUrl)
       .then((r) => r.json())
       .then((data) => {
         if (data?.subtitles && Array.isArray(data.subtitles) && data.subtitles.length > 0) {
@@ -2250,7 +2833,11 @@ export function EmbedPlayer({
 
     setShowSettingsMenu(false);
     setSettingsSubMenu("main");
-    showToast("success", `Switched to ${formatServerRouteName(src)} (${src.type === "DUB" ? "Dub" : "Sub"})`);
+    if (isAnimeContent) {
+      showToast("success", `Switched to ${formatServerRouteName(src)} (${src.type === "DUB" ? "Dub" : "Sub"})`);
+    } else {
+      showToast("success", `Switched to ${formatServerRouteName(src)}`);
+    }
 
     postToParent("PLAYER_EVENT", {
       type: "source_change",
@@ -2259,7 +2846,27 @@ export function EmbedPlayer({
       audio: newType,
       videoUrl: src.videoUrl,
     });
-  }, [currentTime, selectedType, getSourceProvider, formatServerRouteName, showToast, postToParent, duration, rawSkipTimes]);
+  }, [
+    currentTime,
+    selectedType,
+    server,
+    sources,
+    activeAudioTrack,
+    isAnimeContent,
+    mediaType,
+    anilistId,
+    malId,
+    tmdbId,
+    seasonNumber,
+    episodeNumber,
+    animeTitle,
+    getSourceProvider,
+    formatServerRouteName,
+    showToast,
+    postToParent,
+    duration,
+    rawSkipTimes,
+  ]);
 
   const handleFallbackToNextServer = useCallback(() => {
     const isDub = selectedType === "dub";
@@ -2434,10 +3041,10 @@ export function EmbedPlayer({
           const langUpper = lang.toUpperCase();
 
           const found = sources.find((s) => {
-            const typeOk = s.type.toUpperCase() === langUpper;
+            const typeOk = (s.type || "").toUpperCase() === langUpper;
             const provOk = !pId || s.id?.toLowerCase().includes(pId) || s.serverName?.toLowerCase().includes(pId);
             return typeOk && provOk;
-          }) || sources.find((s) => s.type.toUpperCase() === langUpper);
+          }) || sources.find((s) => (s.type || "").toUpperCase() === langUpper);
 
           if (found) {
             handleSelectSource(found);
@@ -3305,46 +3912,90 @@ export function EmbedPlayer({
                   >
                     <ChevronLeft className="w-3.5 h-3.5 -translate-x-[0.5px]" />
                   </button>
-                  <span className="text-[11px] font-semibold text-white">Server Route</span>
+                  <span className="text-[11px] font-semibold text-white">
+                    {isAnimeContent ? "Server Route" : "Stream Servers"}
+                  </span>
                 </div>
 
-                <div className="space-y-0.5">
-                  {/* Sub Button */}
-                  <button
-                    type="button"
-                    onClick={() => setSettingsSubMenu("server-sub")}
-                    className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
-                  >
-                    <span className="text-[11px] font-semibold text-white">Sub</span>
-                    <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                      <span>
-                        {nativeSubSources.length} {nativeSubSources.length === 1 ? "server" : "servers"}
-                      </span>
-                      <ChevronRight className="w-3 h-3 text-zinc-400" />
-                    </div>
-                  </button>
+                {isAnimeContent ? (
+                  <div className="space-y-0.5">
+                    {/* Sub Button */}
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSubMenu("server-sub")}
+                      className="w-full flex items-center justify-between p-1.5 rounded-xl hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors group cursor-pointer text-left"
+                    >
+                      <span className="text-[11px] font-semibold text-white">Sub</span>
+                      <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
+                        <span>
+                          {nativeSubSources.length} {nativeSubSources.length === 1 ? "server" : "servers"}
+                        </span>
+                        <ChevronRight className="w-3 h-3 text-zinc-400" />
+                      </div>
+                    </button>
 
-                  {/* Dub Button */}
-                  <button
-                    type="button"
-                    onClick={() => setSettingsSubMenu("server-dub")}
-                    disabled={nativeDubSources.length === 0}
-                    className={cn(
-                      "w-full flex items-center justify-between p-1.5 rounded-xl transition-colors group text-left",
-                      nativeDubSources.length === 0
-                        ? "opacity-40 cursor-not-allowed"
-                        : "hover:bg-white/[0.08] active:bg-white/[0.12] cursor-pointer"
+                    {/* Dub Button */}
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSubMenu("server-dub")}
+                      disabled={nativeDubSources.length === 0}
+                      className={cn(
+                        "w-full flex items-center justify-between p-1.5 rounded-xl transition-colors group text-left",
+                        nativeDubSources.length === 0
+                          ? "opacity-40 cursor-not-allowed"
+                          : "hover:bg-white/[0.08] active:bg-white/[0.12] cursor-pointer"
+                      )}
+                    >
+                      <span className="text-[11px] font-semibold text-white">Dub</span>
+                      <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
+                        <span>
+                          {nativeDubSources.length} {nativeDubSources.length === 1 ? "server" : "servers"}
+                        </span>
+                        <ChevronRight className="w-3 h-3 text-zinc-400" />
+                      </div>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-0.5 max-h-52 overflow-y-auto overflow-x-hidden pr-1.5 player-menu-scrollbar">
+                    {vidlyServers.length === 0 ? (
+                      <div className="py-4 px-2 text-center text-zinc-400 text-[11px]">
+                        No servers available
+                      </div>
+                    ) : (
+                      vidlyServers.map((src) => {
+                        const isSelected = (activeSourceId || currentSource?.id) === src.id;
+                        const name = formatServerRouteName(src);
+                        const metaTag = formatServerRouteAudio(src);
+                        return isSelected ? (
+                          <div
+                            key={src.id}
+                            className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white/10 text-[11px] font-semibold text-white shadow-sm"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Check className="w-3.5 h-3.5 text-white shrink-0" />
+                              <span className="truncate">{name}</span>
+                            </div>
+                            <span className="text-[10px] font-medium text-zinc-400 shrink-0 ml-2">
+                              {metaTag}
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            key={src.id}
+                            type="button"
+                            onClick={() => handleSelectSource(src)}
+                            className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-[11px] text-zinc-400 hover:text-white transition-colors pl-7 text-left cursor-pointer group"
+                          >
+                            <span className="truncate min-w-0">{name}</span>
+                            <span className="text-[10px] font-medium text-zinc-500 group-hover:text-zinc-400 shrink-0 ml-2">
+                              {metaTag}
+                            </span>
+                          </button>
+                        );
+                      })
                     )}
-                  >
-                    <span className="text-[11px] font-semibold text-white">Dub</span>
-                    <div className="flex items-center gap-1 text-[11px] text-zinc-400 group-hover:text-zinc-200">
-                      <span>
-                        {nativeDubSources.length} {nativeDubSources.length === 1 ? "server" : "servers"}
-                      </span>
-                      <ChevronRight className="w-3 h-3 text-zinc-400" />
-                    </div>
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3369,7 +4020,11 @@ export function EmbedPlayer({
                     </div>
                   ) : (
                     nativeSubSources.map((src) => {
-                      const isSelected = (activeSourceId || currentSource?.id) === src.id;
+                      const isSelected =
+                        (activeSourceId || currentSource?.id) === src.id ||
+                        (Boolean(currentSource) &&
+                          currentSource!.type === src.type &&
+                          getSourceProvider(currentSource!).toLowerCase() === getSourceProvider(src).toLowerCase());
                       const name = formatServerRouteName(src);
                       const audio = "Sub";
                       return isSelected ? (
@@ -3425,7 +4080,11 @@ export function EmbedPlayer({
                     </div>
                   ) : (
                     nativeDubSources.map((src) => {
-                      const isSelected = (activeSourceId || currentSource?.id) === src.id;
+                      const isSelected =
+                        (activeSourceId || currentSource?.id) === src.id ||
+                        (Boolean(currentSource) &&
+                          currentSource!.type === src.type &&
+                          getSourceProvider(currentSource!).toLowerCase() === getSourceProvider(src).toLowerCase());
                       const name = formatServerRouteName(src);
                       const audio = "English Dub";
                       return isSelected ? (
@@ -3483,10 +4142,12 @@ export function EmbedPlayer({
                     </div>
                     <div className="max-h-[170px] overflow-y-auto overscroll-contain player-menu-scrollbar space-y-0.5 pr-0.5">
                       {combinedAudioTracks.map((audio) => {
+                        const normActiveAudio = cleanAudioParam(activeAudioTrack);
                         const isSelected =
                           activeAudioTrack === audio.id ||
                           activeAudioTrack === audio.lang ||
-                          activeAudioTrack.toLowerCase() === audio.name.toLowerCase();
+                          activeAudioTrack.toLowerCase() === audio.name.toLowerCase() ||
+                          normActiveAudio.code === audio.id;
                         return (
                           <button
                             key={audio.id}

@@ -14,7 +14,7 @@ export async function GET(
   url.searchParams.set("malId", params.malId);
   url.searchParams.set("episode", cleanEp);
   if (!url.searchParams.has("audio")) {
-    url.searchParams.set("audio", "sub");
+    url.searchParams.set("audio", "dub");
   }
   url.searchParams.set("format", "m3u8");
 

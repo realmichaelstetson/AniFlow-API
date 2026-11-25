@@ -17,7 +17,7 @@ export default function MalEmbedDefaultAudioPage({ params }: PageProps) {
       <EmbedPageClient
         malId={malId}
         episodeNumber={episodeNumber}
-        audio="sub"
+        audio="english"
       />
     </Suspense>
   );

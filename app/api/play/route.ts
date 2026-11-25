@@ -3,11 +3,20 @@ import { findAndStream, getReanimeEpisodeSources, isReanimeCloudflareBlocked } f
 import { resolveAnimexPlayStream, getAnimexEpisodeSources } from "@/lib/aniembed-extractor";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
 import { resolveBuzzStream } from "@/lib/buzz";
-import { getVidlyKatanaSources, fetchVidlyKatanaSource, VidlyKatanaSource } from "@/lib/vidly";
+import { getVidlyKatanaSources, fetchVidlyKatanaSource, VidlyKatanaSource, cleanAudioParam } from "@/lib/vidly";
 import { getAniFlowSkipSummary } from "@/lib/aniskip";
 import { ticketStore } from "@/lib/tickets";
+import { handleMoviePlay, handleTvPlay } from "@/lib/media-service";
 
 export const dynamic = "force-dynamic";
+
+function rewriteM3u8AudioQuery(urlStr: string, audioVal: string): string {
+  if (!urlStr) return urlStr;
+  if (/([?&])audio=[^&]*/i.test(urlStr)) {
+    return urlStr.replace(/([?&])audio=[^&]*/i, `$1audio=${encodeURIComponent(audioVal)}`);
+  }
+  return `${urlStr}${urlStr.includes("?") ? "&" : "?"}audio=${encodeURIComponent(audioVal)}`;
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -129,7 +138,17 @@ export async function POST(request: NextRequest) {
     const anilistId = body.anilistId || body.anilist_id;
     const malId = body.malId || body.mal_id;
     const episode = parseInt(String(body.episode || "1"), 10);
-    const audio = (body.audio === "dub" ? "dub" : "sub") as "sub" | "dub";
+    const rawAudio = body.audio;
+    const cleanAudio = rawAudio ? cleanAudioParam(String(rawAudio)) : { code: "en", name: "English" };
+    const audio = (
+      rawAudio
+        ? cleanAudio.code === "ja" || String(rawAudio).toLowerCase() === "sub"
+          ? "sub"
+          : "dub"
+        : body.dub === false || body.dub === "false" || body.dub === "0"
+        ? "sub"
+        : "dub"
+    ) as "sub" | "dub";
     const server = body.server || (audio === "dub" ? "katana-dub" : "katana-sub");
     const startAt = body.startAt || body.progress || 0;
 
@@ -167,14 +186,50 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const tmdbId = searchParams.get("tmdb_id") || searchParams.get("tmdbId");
+    const mediaType = searchParams.get("type");
+
+    if (mediaType === "movie" || (tmdbId && !searchParams.has("season") && !searchParams.has("episode") && !searchParams.has("ep"))) {
+      return handleMoviePlay(request);
+    }
+    if (mediaType === "tv" || (tmdbId && (searchParams.has("season") || searchParams.has("episode") || searchParams.has("ep")))) {
+      return handleTvPlay(request);
+    }
+
     const q = searchParams.get("q") || searchParams.get("query") || searchParams.get("title");
     let rawAnilistId = searchParams.get("anilistId") || searchParams.get("anilist_id");
     let rawMalId = searchParams.get("malId") || searchParams.get("mal_id");
     const episode = parseInt(searchParams.get("episode") || searchParams.get("ep") || "1", 10);
-    const dub = searchParams.get("dub") === "true" || searchParams.get("dub") === "1";
-    const audio = (searchParams.get("audio") || (dub ? "dub" : "sub")) as "sub" | "dub";
-    const serverParam = (searchParams.get("server") || "katana-sub").toLowerCase();
+    const rawAudioParam = searchParams.get("audio");
+    const dubParam = searchParams.get("dub");
+    const explicitServer = searchParams.get("server");
     const providerParam = searchParams.get("provider") || searchParams.get("providerId");
+
+    let audio: "sub" | "dub" = "dub";
+    let targetAudioCode = "en";
+
+    if (rawAudioParam) {
+      const norm = cleanAudioParam(rawAudioParam);
+      targetAudioCode = norm.code;
+      audio = norm.code === "ja" ? "sub" : norm.code === "en" ? "dub" : "sub";
+    } else if (dubParam !== null) {
+      const isDub = dubParam === "true" || dubParam === "1";
+      audio = isDub ? "dub" : "sub";
+      targetAudioCode = isDub ? "en" : "ja";
+    } else if (explicitServer) {
+      const sLow = explicitServer.toLowerCase();
+      if (sLow.includes("-sub") || sLow === "zuri" || sLow === "zuna") {
+        audio = "sub";
+        targetAudioCode = "ja";
+      } else {
+        audio = "dub";
+        targetAudioCode = "en";
+      }
+    }
+
+    const serverParam = (explicitServer || (audio === "dub" ? "katana-dub" : "katana-sub")).toLowerCase();
+    const hasExplicitServer = Boolean(explicitServer || providerParam);
+    const isMultiLangOverride = targetAudioCode !== "en" && targetAudioCode !== "ja";
     const slugParam = searchParams.get("slug");
     const format = searchParams.get("format");
     const wantsM3u8 =
@@ -236,18 +291,22 @@ export async function GET(request: NextRequest) {
       // 0. Katana (Vidly)
       if (isKatanaParam && effectiveAniId) {
         try {
-          const targetAudio = serverParam.includes("dub") ? "dub" : audio;
-          const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, targetAudio);
-          if (kSrc?.videoUrl) {
-            return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
-              status: 302,
-              headers: CORS_HEADERS,
-            });
-          }
-          if (targetAudio === "dub") {
-            const kSub = await fetchVidlyKatanaSource(effectiveAniId, episode, "sub");
-            if (kSub?.videoUrl) {
-              return NextResponse.redirect(new URL(kSub.videoUrl, baseUrl).href, {
+          if (isMultiLangOverride) {
+            const kAll = await getVidlyKatanaSources(effectiveAniId, episode);
+            const langSrc =
+              kAll.sources.find((s) => s.audioTracks?.some((a) => a.id === targetAudioCode)) ||
+              kAll.sources[0];
+            if (langSrc?.videoUrl) {
+              return NextResponse.redirect(
+                new URL(rewriteM3u8AudioQuery(langSrc.videoUrl, targetAudioCode), baseUrl).href,
+                { status: 302, headers: CORS_HEADERS }
+              );
+            }
+          } else {
+            const targetAudio = serverParam.includes("dub") && !rawAudioParam ? "dub" : audio;
+            const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, targetAudio);
+            if (kSrc?.videoUrl) {
+              return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
                 status: 302,
                 headers: CORS_HEADERS,
               });
@@ -316,12 +375,13 @@ export async function GET(request: NextRequest) {
           }).catch(() => null);
 
       if (flowData?.hls) {
+        const flowEffectiveAudio = flowData.audio_fallback ? "sub" : (flowData.audio || audio);
         const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
         const mainVParam = flowData.version ? `&v=${flowData.version}` : "";
         const qParam = anilistId ? `&q=${anilistId}` : `&q=${encodeURIComponent(title)}`;
         const epParam = `&ep=${episode}`;
         const srvParam = `&server=${encodeURIComponent(flowData.server || "HD-1")}`;
-        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${audio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`;
+        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${flowEffectiveAudio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`;
         return NextResponse.redirect(new URL(proxyM3u8, baseUrl).href, {
           status: 302,
           headers: CORS_HEADERS,
@@ -331,7 +391,9 @@ export async function GET(request: NextRequest) {
       // 4. Fallback to Katana
       if (effectiveAniId) {
         try {
-          const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, audio);
+          const kSrc =
+            (await fetchVidlyKatanaSource(effectiveAniId, episode, audio)) ||
+            (audio === "dub" ? await fetchVidlyKatanaSource(effectiveAniId, episode, "sub") : null);
           if (kSrc?.videoUrl) {
             return NextResponse.redirect(new URL(kSrc.videoUrl, baseUrl).href, {
               status: 302,
@@ -384,13 +446,16 @@ export async function GET(request: NextRequest) {
 
       const allServersFormatted: any[] = [...katanaSourcesList];
 
+      let katanaSubFallback: any = null;
       if (isKatanaParam && katanaSourcesList.length > 0) {
-        const wantsDub = audio === "dub" || serverParam.includes("dub");
-        const dubSrc = katanaSourcesList.find((s) => s.type === "DUB");
-        const subSrc = katanaSourcesList.find((s) => s.type === "SUB") || katanaSourcesList[0];
-        const activeKatana = (wantsDub && dubSrc) ? dubSrc : subSrc;
-        const isAudioFallback = wantsDub && !dubSrc;
-        resolvedServerName = activeKatana.serverName;
+        const wantsDub = audio === "dub" || (!rawAudioParam && serverParam.includes("dub"));
+        const dubSrc =
+          katanaSourcesList.find((s) => s.type === "DUB") ||
+          katanaSourcesList.find((s) => s.audioTracks?.some((a) => a.id === "en"));
+        const subSrc =
+          katanaSourcesList.find((s) => s.id === "katana-sub") ||
+          katanaSourcesList.find((s) => s.type === "SUB") ||
+          katanaSourcesList[0];
 
         // Merge all distinct audio tracks across Katana sources so all languages are visible
         const combinedKatanaAudio: any[] = [];
@@ -404,21 +469,64 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        result = {
-          server: "Katana",
-          serverName: activeKatana.serverName,
-          provider: "katana",
-          audio: activeKatana.type === "DUB" ? "dub" : "sub",
-          m3u8: activeKatana.videoUrl,
-          fullM3u8: activeKatana.videoUrl.startsWith("http") ? activeKatana.videoUrl : `${baseUrl}${activeKatana.videoUrl}`,
-          audioTracks: combinedKatanaAudio.length > 0 ? combinedKatanaAudio : (activeKatana.audioTracks || []),
-          subtitles: activeKatana.subtitles || [],
-          intro: null,
-          outro: null,
-          chapters: [],
-          hasDub: Boolean(dubSrc),
-          audio_fallback: isAudioFallback,
-        };
+        if (isMultiLangOverride) {
+          const langSrc =
+            katanaSourcesList.find((s) => s.audioTracks?.some((a) => a.id === targetAudioCode)) || subSrc;
+          const m3u8Url = rewriteM3u8AudioQuery(langSrc.videoUrl, targetAudioCode);
+          resolvedServerName = langSrc.serverName;
+          result = {
+            server: "Katana",
+            serverName: langSrc.serverName,
+            provider: "katana",
+            audio: targetAudioCode,
+            m3u8: m3u8Url,
+            fullM3u8: m3u8Url.startsWith("http") ? m3u8Url : `${baseUrl}${m3u8Url}`,
+            audioTracks: combinedKatanaAudio.length > 0 ? combinedKatanaAudio : (langSrc.audioTracks || []),
+            subtitles: langSrc.subtitles || [],
+            intro: null,
+            outro: null,
+            chapters: [],
+            hasDub: Boolean(dubSrc),
+            audio_fallback: false,
+          };
+        } else if (!wantsDub || dubSrc) {
+          const activeKatana = wantsDub ? dubSrc! : subSrc;
+          const effAudio = wantsDub ? "dub" : "sub";
+          const m3u8Url = rewriteM3u8AudioQuery(activeKatana.videoUrl, wantsDub ? "en" : "ja");
+          resolvedServerName = activeKatana.serverName;
+          result = {
+            server: "Katana",
+            serverName: activeKatana.serverName,
+            provider: "katana",
+            audio: effAudio,
+            m3u8: m3u8Url,
+            fullM3u8: m3u8Url.startsWith("http") ? m3u8Url : `${baseUrl}${m3u8Url}`,
+            audioTracks: combinedKatanaAudio.length > 0 ? combinedKatanaAudio : (activeKatana.audioTracks || []),
+            subtitles: activeKatana.subtitles || [],
+            intro: null,
+            outro: null,
+            chapters: [],
+            hasDub: Boolean(dubSrc),
+            audio_fallback: false,
+          };
+        } else {
+          const m3u8Url = rewriteM3u8AudioQuery(subSrc.videoUrl, "ja");
+          katanaSubFallback = {
+            server: "Katana",
+            serverName: subSrc.serverName,
+            provider: "katana",
+            audio: "sub",
+            m3u8: m3u8Url,
+            fullM3u8: m3u8Url.startsWith("http") ? m3u8Url : `${baseUrl}${m3u8Url}`,
+            audioTracks: combinedKatanaAudio.length > 0 ? combinedKatanaAudio : (subSrc.audioTracks || []),
+            subtitles: subSrc.subtitles || [],
+            intro: null,
+            outro: null,
+            chapters: [],
+            hasDub: false,
+            audio_fallback: true,
+          };
+        }
       }
 
       // 2. Animex if requested
@@ -544,12 +652,13 @@ export async function GET(request: NextRequest) {
       // Process Re:ANIME / Flow servers
       const flowHasDub = Boolean(flowData?.has_dub && !flowData?.audio_fallback);
       if (flowData?.hls) {
+        const flowEffectiveAudio = flowData.audio_fallback ? "sub" : (flowData.audio || audio);
         const mainAidParam = flowData.access_id ? `&aid=${encodeURIComponent(flowData.access_id)}` : "";
         const mainVParam = flowData.version ? `&v=${flowData.version}` : "";
         const qParam = anilistId ? `&q=${anilistId}` : `&q=${encodeURIComponent(title)}`;
         const epParam = `&ep=${episode}`;
         const srvParam = `&server=${encodeURIComponent(flowData.server || "HD-1")}`;
-        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${audio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`;
+        const proxyM3u8 = `/api/proxy/m3u8?url=${encodeURIComponent(flowData.hls)}&pk=${encodeURIComponent(flowData.pk || "")}&audio=${flowEffectiveAudio}${mainAidParam}${mainVParam}${qParam}${epParam}${srvParam}`;
 
         const flowServers = (flowData.all_servers || []).map((s: any) => {
           const isDubSrv = s.audio === "dub" && flowHasDub;
@@ -696,7 +805,9 @@ export async function GET(request: NextRequest) {
         (s) => s.type === "DUB" && (s.id?.includes("yuri") || s.serverName?.toLowerCase().includes("yuri"))
       );
       const buzzDubAvailable = Boolean(buzzDubData?.m3u8);
-      const katanaDubAvailable = katanaSourcesList.some((s) => s.type === "DUB");
+      const katanaDubAvailable = katanaSourcesList.some(
+        (s) => s.type === "DUB" || s.audioTracks?.some((a) => a.id === "en")
+      );
 
       const standardProviders = [
         { prov: "Katana", srv: "katana", subId: "katana-sub", dubId: "katana-dub", canDub: katanaDubAvailable },
@@ -771,6 +882,38 @@ export async function GET(request: NextRequest) {
             });
           }
         }
+      }
+
+      // Fallback: If no server result yet (e.g. Katana lacked Dub), try authentic Dub from other providers before Sub fallback
+      if (!result && audio === "dub" && (!hasExplicitServer || serverParam === "katana-dub" || serverParam === "katana")) {
+        const dubCandidate =
+          allServersFormatted.find(
+            (s) => s.type === "DUB" && !s.audio_fallback && s.videoUrl && !String(s.videoUrl).includes("format=m3u8")
+          ) || allServersFormatted.find((s) => s.type === "DUB" && !s.audio_fallback && s.videoUrl);
+        if (dubCandidate) {
+          resolvedServerName = dubCandidate.serverName || dubCandidate.server;
+          result = {
+            server: dubCandidate.server || resolvedServerName,
+            serverName: dubCandidate.serverName || resolvedServerName,
+            audio: "dub",
+            m3u8: dubCandidate.videoUrl,
+            fullM3u8: dubCandidate.videoUrl.startsWith("http") ? dubCandidate.videoUrl : `${baseUrl}${dubCandidate.videoUrl}`,
+            audioTracks: dubCandidate.audioTracks || [],
+            subtitles: dubCandidate.subtitles || [],
+            intro: dubCandidate.intro || aniSkipIntro,
+            outro: dubCandidate.outro || aniSkipOutro,
+            chapters: dubCandidate.chapters || [],
+            refDuration: dubCandidate.refDuration || 1440,
+            allServers: allServersFormatted,
+            hasDub: true,
+            audio_fallback: false,
+          };
+        }
+      }
+
+      if (!result && katanaSubFallback) {
+        resolvedServerName = katanaSubFallback.serverName;
+        result = katanaSubFallback;
       }
 
       // Fallback: If no server result yet, pick matching from allServersFormatted
@@ -856,7 +999,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const finalHasDub = Boolean(streamResult.hasDub ?? hasAnyAuthenticDub);
+    const finalHasDub = Boolean(streamResult.hasDub || hasAnyAuthenticDub);
     const finalAudioFallback = Boolean(streamResult.audio_fallback || (audio === "dub" && !finalHasDub));
 
     return NextResponse.json(

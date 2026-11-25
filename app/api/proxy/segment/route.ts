@@ -141,7 +141,14 @@ export async function GET(request: NextRequest) {
 
   let effectiveReferer = referer;
   if (!effectiveReferer) {
-    if (targetUrl.includes("hikari") || targetUrl.includes("streamrip.fun") || targetUrl.includes("vidly")) {
+    if (
+      targetUrl.includes("hikari") ||
+      targetUrl.includes("streamrip.fun") ||
+      targetUrl.includes("vidly") ||
+      targetUrl.includes("rousav.tech") ||
+      targetUrl.includes("hakunaymatata.com") ||
+      targetUrl.includes("workers.dev")
+    ) {
       effectiveReferer = "https://vidly.pro/";
     } else if (
       targetUrl.includes("megaplay") ||

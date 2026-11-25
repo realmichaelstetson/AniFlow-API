@@ -127,6 +127,13 @@ export async function GET(request: NextRequest) {
       } else if (targetUrl.includes("flixcloud") || targetUrl.includes("coolapi")) {
         effectiveReferer = "https://flixcloud.cc/";
       } else if (
+        targetUrl.includes("rousav.tech") ||
+        targetUrl.includes("streamrip.fun") ||
+        targetUrl.includes("hakunaymatata.com") ||
+        targetUrl.includes("vidly")
+      ) {
+        effectiveReferer = "https://vidly.pro/";
+      } else if (
         targetUrl.includes("megaplay") ||
         targetUrl.includes("broforgotsave") ||
         targetUrl.includes("eclipseharbor") ||
@@ -140,18 +147,60 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const reqHeaders = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+      Referer: effectiveReferer,
+      Accept: "*/*",
+    };
+
     const response = await axios.get(targetUrl, {
       responseType: "text",
       timeout: 10000,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        Referer: effectiveReferer,
-        Accept: "*/*",
-      },
+      headers: reqHeaders,
     });
 
-    const rawContent: string = response.data || "";
+    let rawContent: string = response.data || "";
+
+    // If the subtitle URL points to an HLS subtitle playlist (.m3u8), resolve its .vtt/.srt segment(s)
+    if (typeof rawContent === "string" && rawContent.trim().startsWith("#EXTM3U")) {
+      const segUrls = rawContent
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"))
+        .map((seg) => {
+          try {
+            return new URL(seg, targetUrl).href;
+          } catch {
+            return seg;
+          }
+        });
+
+      if (segUrls.length > 0) {
+        const fetchedParts = await Promise.all(
+          segUrls.slice(0, 20).map(async (u) => {
+            try {
+              const segRes = await axios.get(u, {
+                responseType: "text",
+                timeout: 10000,
+                headers: reqHeaders,
+              });
+              return typeof segRes.data === "string" ? segRes.data : "";
+            } catch {
+              return "";
+            }
+          })
+        );
+        const combined = fetchedParts
+          .filter(Boolean)
+          .map((part, idx) => (idx === 0 ? part : part.replace(/^WEBVTT[^\n]*\n+/i, "")))
+          .join("\n\n");
+        if (combined.trim()) {
+          rawContent = combined;
+        }
+      }
+    }
+
     let finalVtt = rawContent;
 
     if (rawContent.includes("[Script Info]") || rawContent.includes("Dialogue:")) {

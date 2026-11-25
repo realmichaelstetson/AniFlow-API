@@ -17,7 +17,7 @@ export default function AniEmbedDefaultAudioPage({ params }: PageProps) {
       <EmbedPageClient
         anilistId={anilistId}
         episodeNumber={episodeNumber}
-        audio="sub"
+        audio="english"
       />
     </Suspense>
   );

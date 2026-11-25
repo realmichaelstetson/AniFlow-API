@@ -14,6 +14,7 @@ import crypto from "crypto";
 import { once } from "events";
 import type { Writable } from "stream";
 import { findTsStartOffset } from "@/lib/stream-proxy/media-buffer";
+import { cleanAudioParam, normalizeLanguage } from "@/lib/vidly";
 
 const SEGMENT_CONCURRENCY = 6;
 // Upstream CDNs throw sporadic 502s under parallel load; a missing segment ruins the file
@@ -165,13 +166,18 @@ function parseMedia(text: string, baseUrl: string): MediaPlaylist {
   return { initUrl, segments, duration };
 }
 
-function pickAudio(audios: HlsAudioRendition[], groupId: string | null, audio: "sub" | "dub") {
+function pickAudio(audios: HlsAudioRendition[], groupId: string | null, audio: string) {
   const pool = audios.filter((a) => !groupId || a.groupId === groupId);
   if (pool.length === 0) return null;
-  const wanted =
-    audio === "dub"
-      ? pool.find((a) => a.language.startsWith("en") || /english/i.test(a.name))
-      : pool.find((a) => a.language.startsWith("ja") || a.language === "jpn" || /native|japanese/i.test(a.name));
+  const target = cleanAudioParam(audio);
+  const wanted = pool.find((a) => {
+    const norm = normalizeLanguage(a.language, a.name);
+    return (
+      norm.code === target.code ||
+      (target.code === "en" && (/english/i.test(a.name) || a.language.startsWith("en"))) ||
+      (target.code === "ja" && (/native|japanese/i.test(a.name) || a.language.startsWith("ja") || a.language === "jpn"))
+    );
+  });
   return wanted || pool.find((a) => a.isDefault) || pool[0];
 }
 
@@ -181,7 +187,7 @@ function pickAudio(audios: HlsAudioRendition[], groupId: string | null, audio: "
  */
 export async function buildDownloadPlan(
   playlistUrl: string,
-  audio: "sub" | "dub",
+  audio: string,
   maxHeight = 0,
   signal?: AbortSignal
 ): Promise<DownloadPlan> {
