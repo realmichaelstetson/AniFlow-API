@@ -305,33 +305,26 @@ export async function fetchBufferWithBypass(
     Accept: "*/*",
   };
 
-  // 1. Try got-scraping first (bypasses Cloudflare & datacenter TLS blocks)
+  // 1. Try got-scraping first (bypasses Cloudflare & datacenter TLS blocks; match reanime.ts IP family first)
   try {
     const got = await getGotScraping();
     if (got) {
-      const gotOpts: any = {
+      const baseOpts: any = {
         responseType: "buffer",
         headers: reqHeaders,
         http2: true,
-        dnsLookupIpVersion: 4,
         throwHttpErrors: false,
         timeout: { request: timeoutMs },
         retry: { limit: 1 },
       };
-      if (customHeaders) {
-        gotOpts.useHeaderGenerator = false;
-      }
-      let res: any;
-      try {
-        res = await got(url, gotOpts);
-      } catch (ipErr: any) {
-        const code = ipErr?.code || ipErr?.cause?.code || "";
-        if (code === "ENETUNREACH" || code === "EHOSTUNREACH" || code === "EAI_NONAME") {
-          delete gotOpts.dnsLookupIpVersion;
-          res = await got(url, gotOpts);
-        } else {
-          throw ipErr;
-        }
+      let res: any = await got(url, baseOpts);
+      if (!res || res.statusCode >= 400) {
+        try {
+          const ipv4Res = await got(url, { ...baseOpts, dnsLookupIpVersion: 4 });
+          if (ipv4Res && ipv4Res.statusCode < 400 && ipv4Res.rawBody?.length > 0) {
+            res = ipv4Res;
+          }
+        } catch {}
       }
 
       if (res && res.statusCode < 400 && res.rawBody && res.rawBody.length > 0) {

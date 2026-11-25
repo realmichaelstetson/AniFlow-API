@@ -191,10 +191,18 @@ function isCloudflareChallengeHtml(body: string): boolean {
   );
 }
 
+const stripNavHeadersHook = (reqOpts: any) => {
+  if (reqOpts?.headers) {
+    delete reqOpts.headers["upgrade-insecure-requests"];
+    delete reqOpts.headers["sec-fetch-user"];
+  }
+};
+
 /**
  * Resilient HTTP fetcher for Vidly SSR pages, sealed `/api/sources` JSON, and HLS manifests.
- * Uses Chrome TLS + HTTP/2 (via `got-scraping`) with IPv4 preference so dual-stack datacenter
- * hosts do not alternate IPv6/IPv4 or get flagged before sending cookies and CORS headers.
+ * Follows `lib/reanime.ts`'s Cloudflare-bypass strategy first (`got-scraping` with `useHeaderGenerator: true`
+ * and default IP family — avoiding crowded shared IPv4 NAT pools on datacenter hosts like Koyeb),
+ * then rotates browser/IP profiles (Firefox TLS, IPv4, manual headers, axios, fetch) on 403/429/503.
  */
 async function fetchVidlyHttp(opts: {
   url: string;
@@ -219,41 +227,89 @@ async function fetchVidlyHttp(opts: {
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const cookieHeader = formatVidlyCookies(session);
-    const headers = buildVidlyHeaders(mode, referer, cookieHeader, !omitOriginOnRetry);
+    const manualHeaders = buildVidlyHeaders(mode, referer, cookieHeader, !omitOriginOnRetry);
     let currentRes: { status: number; body: string } | null = null;
 
     if (gotScraping) {
+      // Strategy rotation across attempts:
+      // 0: Chrome headerGenerator + default IP (IPv6 on dual-stack hosts like Koyeb, matching reanime.ts)
+      // 1: Firefox headerGenerator + default IP (distinct TLS ciphers/sigalgs/HTTP2 header order)
+      // 2: Chrome headerGenerator + IPv4 (dnsLookupIpVersion: 4 fallback)
+      // 3+: Manual Chrome headers (useHeaderGenerator: false)
+      const useFirefox = attempt === 1 && (mode === "api" || mode === "page");
+      const forceIpv4 = attempt === 2 && !ipv4Unsupported;
+      const useGen = attempt < 3 && (mode === "page" || mode === "api");
+
       const tryGot = async (preferIpv4: boolean) => {
         const reqOpts: any = {
           url,
-          headers,
           http2: true,
-          useHeaderGenerator: false,
+          useHeaderGenerator: useGen,
           throwHttpErrors: false,
           decompress: true,
           retry: { limit: 0 },
           timeout: { request: timeoutMs },
         };
+
+        if (useGen) {
+          reqOpts.headerGeneratorOptions = useFirefox
+            ? {
+                browsers: [{ name: "firefox", minVersion: 120 }],
+                operatingSystems: ["windows"],
+                devices: ["desktop"],
+              }
+            : {
+                browsers: [{ name: "chrome", minVersion: 128 }],
+                operatingSystems: ["windows"],
+                devices: ["desktop"],
+              };
+
+          if (mode === "api") {
+            reqOpts.headers = {
+              accept: "*/*",
+              origin: "https://vidly.pro",
+              referer,
+              "sec-fetch-dest": "empty",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-site": "same-origin",
+              ...(cookieHeader ? { cookie: cookieHeader } : {}),
+            };
+            reqOpts.hooks = { beforeRequest: [stripNavHeadersHook] };
+          } else {
+            reqOpts.headers = {
+              referer,
+              ...(cookieHeader ? { cookie: cookieHeader } : {}),
+            };
+          }
+
+          if (!useFirefox && session?.tokenObj) {
+            reqOpts.sessionToken = session.tokenObj;
+          }
+        } else {
+          reqOpts.headers = manualHeaders;
+          if (session?.tokenObj) {
+            reqOpts.sessionToken = session.tokenObj;
+          }
+        }
+
         if (preferIpv4 && !ipv4Unsupported) {
           reqOpts.dnsLookupIpVersion = 4;
         }
         if (OUTBOUND_PROXY_URL) {
           reqOpts.proxyUrl = OUTBOUND_PROXY_URL;
         }
-        if (session?.tokenObj) {
-          reqOpts.sessionToken = session.tokenObj;
-        }
+
         return await gotScraping(reqOpts);
       };
 
       try {
-        const res = await tryGot(true);
+        const res = await tryGot(forceIpv4);
         captureVidlyCookies(session, res.headers?.["set-cookie"]);
         const body = typeof res.body === "string" ? res.body : String(res.body ?? "");
         currentRes = { status: Number(res.statusCode || 200), body };
       } catch (err: any) {
         const code = err?.code || err?.cause?.code || "";
-        if (code === "ENETUNREACH" || code === "EHOSTUNREACH" || code === "EAI_NONAME") {
+        if (forceIpv4 && (code === "ENETUNREACH" || code === "EHOSTUNREACH" || code === "EAI_NONAME")) {
           ipv4Unsupported = true;
           try {
             const res = await tryGot(false);
@@ -265,8 +321,13 @@ async function fetchVidlyHttp(opts: {
       }
     }
 
-    // Fallback to axios (outbound proxy if set, otherwise IPv4-first then default)
-    if (!currentRes) {
+    // Fallback to axios + native fetch if gotScraping errored out or returned non-success on final attempt
+    const gotRejected =
+      !currentRes ||
+      (mode === "api" && !(currentRes.status >= 200 && currentRes.status < 300 && currentRes.body.startsWith("v1."))) ||
+      (mode === "page" && (currentRes.status >= 400 || isCloudflareChallengeHtml(currentRes.body)));
+
+    if (!currentRes || (gotRejected && attempt === maxRetries)) {
       try {
         const axiosClient = OUTBOUND_PROXY_URL
           ? axios.create({
@@ -274,32 +335,43 @@ async function fetchVidlyHttp(opts: {
               httpsAgent: getOutboundHttpsAgent(),
               timeout: timeoutMs,
             })
-          : ipv4Unsupported
-          ? vidlyAxios
-          : vidlyAxios4;
+          : vidlyAxios;
         const axRes = await axiosClient.get(url, {
-          headers,
+          headers: manualHeaders,
           timeout: timeoutMs,
           responseType: "text",
           validateStatus: () => true,
         });
         captureVidlyCookies(session, axRes.headers?.["set-cookie"]);
-        const body = typeof axRes.data === "string" ? axRes.data : JSON.stringify(axRes.data ?? "");
-        currentRes = { status: axRes.status, body };
-      } catch (err: any) {
-        if (!ipv4Unsupported && !OUTBOUND_PROXY_URL) {
-          try {
-            const axRes = await vidlyAxios.get(url, {
-              headers,
-              timeout: timeoutMs,
-              responseType: "text",
-              validateStatus: () => true,
-            });
-            captureVidlyCookies(session, axRes.headers?.["set-cookie"]);
-            const body = typeof axRes.data === "string" ? axRes.data : JSON.stringify(axRes.data ?? "");
-            currentRes = { status: axRes.status, body };
-          } catch {}
+        const axBody = typeof axRes.data === "string" ? axRes.data : JSON.stringify(axRes.data ?? "");
+        const axOk =
+          (mode === "api" && axRes.status < 400 && axBody.startsWith("v1.")) ||
+          (mode === "page" && axRes.status < 400 && !isCloudflareChallengeHtml(axBody)) ||
+          (mode === "manifest" && axRes.status < 400);
+        if (!currentRes || axOk) {
+          currentRes = { status: axRes.status, body: axBody };
         }
+      } catch {}
+
+      if (
+        !currentRes ||
+        (mode === "api" && !currentRes.body.startsWith("v1.")) ||
+        (mode === "page" && (currentRes.status >= 400 || isCloudflareChallengeHtml(currentRes.body)))
+      ) {
+        try {
+          const fRes = await fetch(url, {
+            headers: manualHeaders,
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          const fBody = await fRes.text();
+          const fOk =
+            (mode === "api" && fRes.ok && fBody.startsWith("v1.")) ||
+            (mode === "page" && fRes.ok && !isCloudflareChallengeHtml(fBody)) ||
+            (mode === "manifest" && fRes.ok);
+          if (!currentRes || fOk) {
+            currentRes = { status: fRes.status, body: fBody };
+          }
+        } catch {}
       }
     }
 
@@ -315,7 +387,6 @@ async function fetchVidlyHttp(opts: {
           return currentRes;
         }
       } else {
-        // manifest mode: success, or non-retryable definitive 404/410
         if (currentRes.status >= 200 && currentRes.status < 400) {
           return currentRes;
         }
@@ -338,8 +409,8 @@ async function fetchVidlyHttp(opts: {
         currentRes.status === 403 ||
         (mode === "api" && currentRes.status >= 400);
       if (!retryableStatus) break;
-      const baseDelay = mode === "manifest" ? 300 : 550 * (attempt + 1);
-      const jitter = Math.floor(Math.random() * 300);
+      const baseDelay = mode === "manifest" ? 300 : 450 * (attempt + 1);
+      const jitter = Math.floor(Math.random() * 250);
       await new Promise((r) => setTimeout(r, baseDelay + jitter));
     }
   }
@@ -356,6 +427,11 @@ async function fetchVidlyHttp(opts: {
         return { status: 200, body: res.data };
       }
     } catch {}
+  }
+
+  if (mode === "api" && (!lastResult || lastResult.status >= 400 || !lastResult.body.startsWith("v1."))) {
+    const snippet = (lastResult?.body || "").replace(/\s+/g, " ").slice(0, 120);
+    console.warn(`[vidly] /api/sources failed (${lastResult?.status ?? "no-response"}) for ${url}: ${snippet}`);
   }
 
   return lastResult;
@@ -1019,11 +1095,11 @@ async function fetchVidlyMediaSourcesShared(opts: {
       }
     }
 
-    // 2. Query remaining providers concurrently with mild stagger to avoid Redis burst rate limits
+    // 2. Query remaining providers with gentle stagger to avoid Redis burst rate limits
     const remainingServers = serverList.filter((srv) => srv.id !== initialData?.provider?.id);
     const queryPromises = remainingServers.map(async (srv, idx) => {
       if (!token) return [];
-      if (idx > 0) await new Promise((r) => setTimeout(r, idx * 50));
+      if (idx > 0) await new Promise((r) => setTimeout(r, idx * 120));
 
       try {
         const apiUrl =
