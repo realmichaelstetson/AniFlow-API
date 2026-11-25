@@ -32,7 +32,7 @@ import {
   Upload,
 } from "lucide-react";
 import { formatSecondsToTime, cn } from "@/lib/utils";
-import { normalizeLanguage, cleanAudioParam } from "@/lib/vidly";
+import { normalizeLanguage, cleanAudioParam } from "@/lib/vidly-lang";
 import * as CountryFlags from "country-flag-icons/react/3x2";
 import { SubtitleSettingsDialog, SubtitleStyles } from "./subtitle-settings-dialog";
 import { attachAvSyncGuard } from "./player-core/av-sync-guard";

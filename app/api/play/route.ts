@@ -3,7 +3,7 @@ import { findAndStream, getReanimeEpisodeSources, isReanimeCloudflareBlocked } f
 import { resolveAnimexPlayStream, getAnimexEpisodeSources } from "@/lib/aniembed-extractor";
 import { resolveFromAniListId, resolveFromMalId } from "@/lib/anime-resolver";
 import { resolveBuzzStream } from "@/lib/buzz";
-import { getVidlyKatanaSources, fetchVidlyKatanaSource, VidlyKatanaSource, cleanAudioParam } from "@/lib/vidly";
+import { getVidlyKatanaSources, fetchVidlyKatanaSource, VidlyKatanaSource, cleanAudioParam, fetchVidlyManifestText } from "@/lib/vidly";
 import { getAniFlowSkipSummary } from "@/lib/aniskip";
 import { ticketStore } from "@/lib/tickets";
 import { handleMoviePlay, handleTvPlay } from "@/lib/media-service";
@@ -56,12 +56,19 @@ async function isAnimeM3u8CandidateHealthy(videoOrProxyUrl: string, baseUrl: str
       headers,
       signal: AbortSignal.timeout(4000),
     });
-    if (!res.ok) return false;
-    const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
-    return text.startsWith("#EXTM3U");
-  } catch {
-    return false;
-  }
+    if (res.ok) {
+      const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
+      if (text.startsWith("#EXTM3U")) return true;
+    }
+  } catch {}
+
+  try {
+    const bypass = await fetchVidlyManifestText(directTarget, 4500);
+    if (bypass && bypass.status < 400 && bypass.body) {
+      return bypass.body.replace(/^\uFEFF/, "").trimStart().startsWith("#EXTM3U");
+    }
+  } catch {}
+  return false;
 }
 
 const CORS_HEADERS = {
@@ -70,7 +77,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "*",
 };
 
-const sourcesCache = new Map<string, { data: any[]; timestamp: number }>();
+const sourcesCache = new Map<string, { data: any[]; expiresAt: number }>();
 const SOURCES_CACHE_TTL = 15 * 60 * 1000; // 15 mins
 
 async function getAllSourcesCached(
@@ -81,7 +88,7 @@ async function getAllSourcesCached(
 ): Promise<any[]> {
   const cacheKey = `${targetIdentifier}_ep${episode}`;
   const cached = sourcesCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < SOURCES_CACHE_TTL) {
+  if (cached && Date.now() < cached.expiresAt) {
     return cached.data;
   }
 
@@ -166,7 +173,8 @@ async function getAllSourcesCached(
 
   const all = [...katanaSources, ...reanimeSources, ...animexSources, ...buzzSources];
   if (all.length > 0) {
-    sourcesCache.set(cacheKey, { data: all, timestamp: Date.now() });
+    const ttl = effectiveAniId && katanaSources.length === 0 ? 45 * 1000 : SOURCES_CACHE_TTL;
+    sourcesCache.set(cacheKey, { data: all, expiresAt: Date.now() + ttl });
   }
   return all;
 }
@@ -335,6 +343,7 @@ export async function GET(request: NextRequest) {
     // FAST-PATH: If caller is requesting direct .m3u8 stream playback (HLS video element)
     if (wantsM3u8) {
       const m3u8Candidates: string[] = [];
+      let deferredKatanaSubUrl: string | null = null;
       const addCandidate = (candidate?: string | null) => {
         if (!candidate) return;
         const abs = candidate.startsWith("http") ? candidate : new URL(candidate, baseUrl).href;
@@ -357,10 +366,14 @@ export async function GET(request: NextRequest) {
           } else {
             const targetAudio = serverParam.includes("dub") && !rawAudioParam ? "dub" : audio;
             const kSrc = await fetchVidlyKatanaSource(effectiveAniId, episode, targetAudio);
-            if (kSrc?.videoUrl) addCandidate(kSrc.videoUrl);
+            if (kSrc?.videoUrl) {
+              addCandidate(kSrc.videoUrl);
+            }
             if (targetAudio === "dub") {
               const kSub = await fetchVidlyKatanaSource(effectiveAniId, episode, "sub");
-              if (kSub?.videoUrl) addCandidate(kSub.videoUrl);
+              if (kSub?.videoUrl) {
+                deferredKatanaSubUrl = kSub.videoUrl;
+              }
             }
           }
         } catch {}
@@ -452,6 +465,17 @@ export async function GET(request: NextRequest) {
       for (const candidateUrl of m3u8Candidates.slice(prevCount)) {
         if (await isAnimeM3u8CandidateHealthy(candidateUrl, baseUrl)) {
           return NextResponse.redirect(candidateUrl, { status: 302, headers: CORS_HEADERS });
+        }
+      }
+
+      const deferredSub = deferredKatanaSubUrl as string | null;
+      if (deferredSub) {
+        addCandidate(deferredSub);
+        const absSub = deferredSub.startsWith("http")
+          ? deferredSub
+          : new URL(deferredSub, baseUrl).href;
+        if (await isAnimeM3u8CandidateHealthy(absSub, baseUrl)) {
+          return NextResponse.redirect(absSub, { status: 302, headers: CORS_HEADERS });
         }
       }
 
@@ -1011,7 +1035,11 @@ export async function GET(request: NextRequest) {
     const hasAnyAuthenticDub = allSources.some((s: any) => s.type === "DUB" && !s.audio_fallback);
 
     if (allSources.length > 0) {
-      sourcesCache.set(`${targetIdentifier}_ep${episode}`, { data: allSources, timestamp: Date.now() });
+      const hasRealKatana =
+        !effectiveAniId ||
+        allSources.some((s: any) => s.id?.startsWith("katana") && !String(s.videoUrl || "").includes("format=m3u8"));
+      const ttl = hasRealKatana ? SOURCES_CACHE_TTL : 45 * 1000;
+      sourcesCache.set(`${targetIdentifier}_ep${episode}`, { data: allSources, expiresAt: Date.now() + ttl });
     }
 
     // Last-resort fallback: If streamResult is still null, take any available source from allSources

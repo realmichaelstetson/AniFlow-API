@@ -6,7 +6,7 @@ import { Copy, Check, ExternalLink, ChevronDown, Download, Minus, Plus, Loader2,
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import * as CountryFlags from "country-flag-icons/react/3x2";
-import { cleanAudioParam, normalizeLanguage } from "@/lib/vidly";
+import { cleanAudioParam, normalizeLanguage } from "@/lib/vidly-lang";
 
 function FlagIcon({ countryCode, className }: { countryCode?: string; className?: string }) {
   const code = (countryCode || "GB").toUpperCase();

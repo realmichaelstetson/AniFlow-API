@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getVidlyMovieSources, getVidlyTvSources, cleanAudioParam, VidlyKatanaSource } from "@/lib/vidly";
+import { getVidlyMovieSources, getVidlyTvSources, cleanAudioParam, VidlyKatanaSource, fetchVidlyManifestText } from "@/lib/vidly";
 import { getTmdbMovie, getTmdbTv } from "@/lib/tmdb";
 import { buildDownloadPlan, streamDownload } from "@/lib/episode-download";
 
@@ -74,12 +74,20 @@ async function verifyM3u8DirectUrl(directUrl?: string): Promise<boolean> {
       },
       signal: AbortSignal.timeout(4500),
     });
-    if (!res.ok) return false;
-    const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
-    return text.startsWith("#EXTM3U");
-  } catch {
-    return false;
-  }
+    if (res.ok) {
+      const text = (await res.text()).replace(/^\uFEFF/, "").trimStart();
+      if (text.startsWith("#EXTM3U")) return true;
+    }
+  } catch {}
+
+  try {
+    const bypass = await fetchVidlyManifestText(directUrl, 5000);
+    if (bypass && bypass.status < 400 && bypass.body) {
+      return bypass.body.replace(/^\uFEFF/, "").trimStart().startsWith("#EXTM3U");
+    }
+  } catch {}
+
+  return false;
 }
 
 async function pickWorkingM3u8Source(

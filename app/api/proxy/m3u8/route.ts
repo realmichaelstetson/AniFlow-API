@@ -3,7 +3,7 @@ import axios from "axios";
 import http from "http";
 import https from "https";
 import { decryptFlixStream, findAndStream } from "@/lib/reanime";
-import { getFreshStreamToken } from "@/lib/token-refresher";
+import { getFreshStreamToken, fetchBufferWithBypass } from "@/lib/token-refresher";
 import { isStreamTokenExpired } from "@/lib/token-utils";
 import { isSafePublicUrl } from "@/shared/validators";
 import { cleanAudioParam, normalizeLanguage } from "@/lib/vidly";
@@ -197,6 +197,23 @@ export async function GET(request: NextRequest) {
         if (attempt === 0) {
           await new Promise((r) => setTimeout(r, 250));
         }
+      }
+    }
+
+    // Fallback to got-scraping Chrome TLS + IPv4 if axios was blocked by Cloudflare/WAF or IPv6
+    if (!response) {
+      let bypass = await fetchBufferWithBypass(targetUrl, { headers, timeoutMs: 12000 });
+      if (bypass && bypass.statusCode === 403 && headers["Origin"]) {
+        const noOriginHeaders = { ...headers };
+        delete noOriginHeaders["Origin"];
+        bypass = await fetchBufferWithBypass(targetUrl, { headers: noOriginHeaders, timeoutMs: 12000 });
+      }
+      if (bypass && bypass.statusCode < 400 && bypass.buffer.length > 0) {
+        response = {
+          data: bypass.buffer,
+          status: bypass.statusCode,
+          headers: {},
+        };
       }
     }
 

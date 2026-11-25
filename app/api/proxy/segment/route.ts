@@ -4,6 +4,7 @@ import https from "https";
 import axios from "axios";
 import { isSafePublicUrl } from "@/shared/validators";
 import { findTsStartOffset, looksLikeTextErrorPayload, isFmp4Buffer } from "@/lib/stream-proxy/media-buffer";
+import { fetchBufferWithBypass } from "@/lib/token-refresher";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +60,32 @@ function segmentResponse(buf: Uint8Array, isKey = false) {
   });
 }
 
+function validateSegmentBuffer(
+  raw: Uint8Array,
+  isEncrypted: boolean,
+  isKey: boolean
+): SegmentResult {
+  let buf = raw;
+  if (isKey) {
+    if (buf.length === 0 || ((buf.length > 32 || buf[0] === 0x3c || buf[0] === 0x7b) && looksLikeTextErrorPayload(buf))) {
+      return { error: "Invalid decryption key received from upstream", status: 502 };
+    }
+    return { buf };
+  }
+
+  // Some hosts wrap MPEG-TS in a fake image header (e.g. a 252-byte PNG header from
+  // TikTokCDN/Megaplay). Strip it; ciphertext and fMP4 are passed through untouched.
+  const tsOffset = findTsStartOffset(buf, isEncrypted);
+  if (tsOffset > 0) {
+    buf = buf.subarray(tsOffset);
+  }
+
+  if (buf.length < 188 || looksLikeTextErrorPayload(buf)) {
+    return { error: "Invalid video chunk received from upstream", status: 502 };
+  }
+  return { buf };
+}
+
 async function fetchSegment(
   targetUrl: string,
   headers: Record<string, string>,
@@ -68,40 +95,36 @@ async function fetchSegment(
   let lastError = "Segment proxy error";
   let lastStatus = 502;
 
-  // One quick retry on transient failures (timeouts, resets, 5xx); 4xx is final.
+  // One quick retry on transient failures (timeouts, resets, 5xx); 4xx is final for axios loop.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await segmentAxios.get(targetUrl, { headers });
-      let buf = new Uint8Array(res.data);
-
-      if (isKey) {
-        if (buf.length === 0 || ((buf.length > 32 || buf[0] === 0x3c || buf[0] === 0x7b) && looksLikeTextErrorPayload(buf))) {
-          return { error: "Invalid decryption key received from upstream", status: 502 };
-        }
-        return { buf };
-      }
-
-      // Some hosts wrap MPEG-TS in a fake image header (e.g. a 252-byte PNG header from
-      // TikTokCDN/Megaplay). Strip it; ciphertext and fMP4 are passed through untouched.
-      const tsOffset = findTsStartOffset(buf, isEncrypted);
-      if (tsOffset > 0) {
-        buf = buf.subarray(tsOffset);
-      }
-
-      if (buf.length < 188 || looksLikeTextErrorPayload(buf)) {
-        return { error: "Invalid video chunk received from upstream", status: 502 };
-      }
-      return { buf };
+      return validateSegmentBuffer(new Uint8Array(res.data), isEncrypted, isKey);
     } catch (err: any) {
       lastError = err?.message || lastError;
       const status = err?.response?.status;
       if (status && status >= 400 && status < 500) {
-        return { error: lastError, status: status === 404 ? 404 : 502 };
+        lastStatus = status === 404 ? 404 : 502;
+        break;
       }
       lastStatus = 502;
       if (attempt === 0) await new Promise((r) => setTimeout(r, 150));
     }
   }
+
+  // Fallback to Chrome TLS + IPv4 if datacenter axios failed (except explicit 404)
+  if (lastStatus !== 404) {
+    try {
+      const bypass = await fetchBufferWithBypass(targetUrl, { headers, timeoutMs: 12000 });
+      if (bypass && bypass.statusCode < 400 && bypass.buffer.length > 0) {
+        const checked = validateSegmentBuffer(new Uint8Array(bypass.buffer), isEncrypted, isKey);
+        if ("buf" in checked) {
+          return checked;
+        }
+      }
+    } catch {}
+  }
+
   return { error: lastError, status: lastStatus };
 }
 

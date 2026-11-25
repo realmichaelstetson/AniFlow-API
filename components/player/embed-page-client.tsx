@@ -3,7 +3,7 @@
 import React from "react";
 import { useSearchParams } from "next/navigation";
 import { EmbedPlayer } from "./embed-player";
-import { cleanAudioParam } from "@/lib/vidly";
+import { cleanAudioParam } from "@/lib/vidly-lang";
 
 export interface EmbedPageClientProps {
   mediaType?: "anime" | "movie" | "tv";

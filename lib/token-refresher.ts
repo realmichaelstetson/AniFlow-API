@@ -287,6 +287,7 @@ export async function fetchBufferWithBypass(
     origin?: string;
     userAgent?: string;
     timeoutMs?: number;
+    headers?: Record<string, string>;
   } = {}
 ): Promise<{ buffer: Buffer; statusCode: number } | null> {
   const {
@@ -294,26 +295,50 @@ export async function fetchBufferWithBypass(
     origin = "https://flixcloud.cc",
     userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     timeoutMs = 12000,
+    headers: customHeaders,
   } = options;
+
+  const reqHeaders: Record<string, string> = customHeaders || {
+    "User-Agent": userAgent,
+    Referer: referer,
+    Origin: origin,
+    Accept: "*/*",
+  };
 
   // 1. Try got-scraping first (bypasses Cloudflare & datacenter TLS blocks)
   try {
     const got = await getGotScraping();
     if (got) {
-      const res = await got(url, {
+      const gotOpts: any = {
         responseType: "buffer",
-        headers: {
-          "User-Agent": userAgent,
-          Referer: referer,
-          Origin: origin,
-          Accept: "*/*",
-        },
+        headers: reqHeaders,
+        http2: true,
+        dnsLookupIpVersion: 4,
+        throwHttpErrors: false,
         timeout: { request: timeoutMs },
         retry: { limit: 1 },
-      });
+      };
+      if (customHeaders) {
+        gotOpts.useHeaderGenerator = false;
+      }
+      let res: any;
+      try {
+        res = await got(url, gotOpts);
+      } catch (ipErr: any) {
+        const code = ipErr?.code || ipErr?.cause?.code || "";
+        if (code === "ENETUNREACH" || code === "EHOSTUNREACH" || code === "EAI_NONAME") {
+          delete gotOpts.dnsLookupIpVersion;
+          res = await got(url, gotOpts);
+        } else {
+          throw ipErr;
+        }
+      }
 
-      if (res && res.rawBody && res.rawBody.length > 0) {
+      if (res && res.statusCode < 400 && res.rawBody && res.rawBody.length > 0) {
         return { buffer: res.rawBody, statusCode: res.statusCode || 200 };
+      }
+      if (res && (res.statusCode === 401 || res.statusCode === 403 || res.statusCode === 410)) {
+        return { buffer: Buffer.alloc(0), statusCode: res.statusCode };
       }
     }
   } catch (err: any) {
@@ -328,12 +353,7 @@ export async function fetchBufferWithBypass(
     const res = await defaultAxios.get(url, {
       responseType: "arraybuffer",
       timeout: timeoutMs,
-      headers: {
-        "User-Agent": userAgent,
-        Referer: referer,
-        Origin: origin,
-        Accept: "*/*",
-      },
+      headers: reqHeaders,
     });
 
     if (res.data) {
@@ -352,12 +372,7 @@ export async function fetchBufferWithBypass(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const fRes = await fetch(url, {
       signal: controller.signal,
-      headers: {
-        "User-Agent": userAgent,
-        Referer: referer,
-        Origin: origin,
-        Accept: "*/*",
-      },
+      headers: reqHeaders,
     });
     clearTimeout(timer);
 
